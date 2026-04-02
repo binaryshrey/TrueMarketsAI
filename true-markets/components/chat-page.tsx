@@ -259,6 +259,7 @@ function pct(n: number): string {
 const DEFAULT_POSITION_NOTIONAL = 100;
 const MAX_CHAT_ATTACHMENTS = 5;
 const MAX_ATTACHMENT_TEXT_CHARS = 12000;
+const PENDING_CHAT_REQUEST_STORAGE_KEY = "truemarkets-pending-chat-request";
 
 const TEXT_LIKE_EXTENSIONS = new Set([
   "txt",
@@ -1383,6 +1384,10 @@ export default function ChatPageContent() {
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachmentPayload[]
   >([]);
+  const hasUserMessages = messages.some((message) => message.role === "user");
+  const composerPlaceholder = hasUserMessages
+    ? "ask follow up question"
+    : "Ask about crypto, stocks, prices, trends ...";
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1477,12 +1482,18 @@ export default function ChatPageContent() {
   );
 
   const sendPrompt = useCallback(
-    async (rawPrompt: string) => {
+    async (
+      rawPrompt: string,
+      options?: {
+        deepResearch?: boolean;
+        attachments?: ChatAttachmentPayload[];
+      },
+    ) => {
       const text = rawPrompt.trim();
       if (streaming) return;
 
-      const attachmentsForRequest = pendingAttachments;
-      const deepResearchForRequest = deepResearchMode;
+      const attachmentsForRequest = options?.attachments ?? pendingAttachments;
+      const deepResearchForRequest = options?.deepResearch ?? deepResearchMode;
       const hasAttachments = attachmentsForRequest.length > 0;
       if (!text && !hasAttachments) return;
 
@@ -1820,12 +1831,48 @@ export default function ChatPageContent() {
 
   // Auto-send the initial query from URL params
   useEffect(() => {
-    if (initialQuery && !sentInitialRef.current) {
+    if (sentInitialRef.current) return;
+
+    try {
+      const rawPendingRequest = window.sessionStorage.getItem(
+        PENDING_CHAT_REQUEST_STORAGE_KEY,
+      );
+
+      if (rawPendingRequest) {
+        window.sessionStorage.removeItem(PENDING_CHAT_REQUEST_STORAGE_KEY);
+        const parsedRequest = JSON.parse(rawPendingRequest) as {
+          query?: string;
+          deepResearch?: boolean;
+          attachments?: ChatAttachmentPayload[];
+        };
+
+        const pendingQuery =
+          typeof parsedRequest.query === "string" ? parsedRequest.query : "";
+        const pendingDeepResearch = parsedRequest.deepResearch === true;
+        const pendingRequestAttachments = Array.isArray(
+          parsedRequest.attachments,
+        )
+          ? parsedRequest.attachments
+          : [];
+
+        if (pendingQuery.trim() || pendingRequestAttachments.length > 0) {
+          sentInitialRef.current = true;
+          void sendPrompt(pendingQuery, {
+            deepResearch: pendingDeepResearch,
+            attachments: pendingRequestAttachments,
+          });
+          return;
+        }
+      }
+    } catch {
+      // Ignore malformed pending chat payloads and fallback to URL query.
+    }
+
+    if (initialQuery) {
       sentInitialRef.current = true;
       void sendPrompt(initialQuery);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialQuery]);
+  }, [initialQuery, sendPrompt]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2182,7 +2229,7 @@ export default function ChatPageContent() {
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Ask a follow-up…"
+                placeholder={composerPlaceholder}
                 className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 outline-none"
                 disabled={streaming}
               />

@@ -18,7 +18,9 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Plus,
   Search,
   Send,
   X,
@@ -38,6 +40,7 @@ import {
   Repeat2,
   Hash,
 } from "lucide-react";
+import { toast } from "sonner";
 
 // ApexCharts — no SSR
 const ReactApexChart = dynamic(() => import("react-apexcharts"), {
@@ -282,6 +285,15 @@ interface ChatMessage {
   newsLoading?: boolean;
 }
 
+interface ChatAttachmentPayload {
+  name: string;
+  mimeType: string;
+  kind: "image" | "text" | "binary";
+  size: number;
+  textContent?: string;
+  imageDataUrl?: string;
+}
+
 type AlpacaOrderSide = "buy" | "sell";
 type AlpacaOrderType = "market" | "limit";
 type AlpacaTimeInForce = "gtc" | "ioc";
@@ -346,6 +358,8 @@ type PredictionBrowseFilter =
   | "deadlines"
   | "price-targets";
 
+type AlertsMode = "price" | "percentage" | "periodic" | "volume";
+
 const PREDICTION_BROWSE_FILTERS: Array<{
   key: PredictionBrowseFilter;
   label: string;
@@ -357,6 +371,38 @@ const PREDICTION_BROWSE_FILTERS: Array<{
   { key: "deadlines", label: "Deadlines" },
   { key: "price-targets", label: "Price Targets" },
 ];
+
+const ALERTS_TABS: Array<{ key: AlertsMode; label: string }> = [
+  { key: "price", label: "Price" },
+  { key: "percentage", label: "Percentage" },
+  { key: "periodic", label: "Periodic" },
+  { key: "volume", label: "Volume" },
+];
+
+const ALERT_CHANNEL_OPTIONS = ["Email", "SMS"] as const;
+const ALERT_ASSET_OPTIONS = ["BTC", "SOL"] as const;
+const ALERT_PERCENTAGE_WINDOW_OPTIONS = [
+  "5 min",
+  "30 min",
+  "1 hour",
+  "4 hours",
+] as const;
+const ALERT_PERIODIC_INTERVAL_OPTIONS = [
+  "1 hour",
+  "2 hours",
+  "4 hours",
+] as const;
+const ALERT_VOLUME_MULTIPLE_OPTIONS = ["2x", "5x", "10x"] as const;
+const ALERT_VOLUME_WINDOW_OPTIONS = ["5 min", "30 min", "1 hour"] as const;
+const ALERT_EXCHANGE_OPTIONS = [
+  "Coinbase",
+  "Binance",
+  "Bitrue",
+  "Kraken",
+  "KuCoin",
+  "Bybit",
+  "OKX",
+] as const;
 
 const DEFAULT_WATCHLIST_ASSET_IDS = [
   "bitcoin",
@@ -382,6 +428,46 @@ function fmtVolumeMultiple(volume: number, marketCap: number): string {
 }
 
 const DEFAULT_POSITION_NOTIONAL = 100;
+const MAX_CHAT_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_TEXT_CHARS = 12000;
+const PENDING_CHAT_REQUEST_STORAGE_KEY = "truemarkets-pending-chat-request";
+
+const TEXT_LIKE_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "csv",
+  "json",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "py",
+  "html",
+  "css",
+  "xml",
+  "yaml",
+  "yml",
+]);
+
+function getFileExtension(filename: string): string {
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex < 0) return "";
+  return filename.slice(dotIndex + 1).toLowerCase();
+}
+
+function isTextLikeFile(file: File): boolean {
+  if (file.type.startsWith("text/")) return true;
+  return TEXT_LIKE_EXTENSIONS.has(getFileExtension(file.name));
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
 
 function formatQtyFromNotional(
   price: number,
@@ -2926,10 +3012,34 @@ export default function CryptoDashboard() {
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
+  const [deepResearchMode, setDeepResearchMode] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    ChatAttachmentPayload[]
+  >([]);
   const [showChat, setShowChat] = useState(false);
   const [predictionSearch, setPredictionSearch] = useState("");
   const [predictionFilter, setPredictionFilter] =
     useState<PredictionBrowseFilter>("all");
+  const [alertsMode, setAlertsMode] = useState<AlertsMode>("price");
+  const [alertChannel, setAlertChannel] = useState<string>("Email");
+  const [alertAssetSearch, setAlertAssetSearch] = useState<string>("BTC");
+  const [alertDirection, setAlertDirection] = useState<"above" | "below">(
+    "above",
+  );
+  const [alertTargetPrice, setAlertTargetPrice] = useState<string>("");
+  const [alertExchange, setAlertExchange] = useState<string>("Coinbase");
+  const [alertPercentageDirection, setAlertPercentageDirection] = useState<
+    "up" | "down"
+  >("up");
+  const [alertPercentageChange, setAlertPercentageChange] =
+    useState<string>("");
+  const [alertPercentageWindow, setAlertPercentageWindow] =
+    useState<string>("5 min");
+  const [alertPeriodicInterval, setAlertPeriodicInterval] =
+    useState<string>("1 hour");
+  const [alertVolumeMultiple, setAlertVolumeMultiple] = useState<string>("5x");
+  const [alertVolumeWindow, setAlertVolumeWindow] = useState<string>("5 min");
   const [watchlistAssetIds, setWatchlistAssetIds] = useState<string[]>([
     ...DEFAULT_WATCHLIST_ASSET_IDS,
   ]);
@@ -2957,7 +3067,13 @@ export default function CryptoDashboard() {
   const [marketLeadersPage, setMarketLeadersPage] = useState(0);
   const [highVolumePage, setHighVolumePage] = useState(0);
   const [showTradingModal, setShowTradingModal] = useState(false);
+  const hasUserMessages = messages.some((message) => message.role === "user");
+  const composerPlaceholder = hasUserMessages
+    ? "ask follow up question"
+    : "Ask about crypto, stocks, prices, trends ...";
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerMenuRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const homeSectionRef = useRef<HTMLDivElement>(null);
   const predictionsSectionRef = useRef<HTMLElement>(null);
@@ -3089,6 +3205,21 @@ export default function CryptoDashboard() {
   }, [messages, showChat]);
 
   useEffect(() => {
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (!composerMenuRef.current) return;
+      if (
+        event.target instanceof Node &&
+        !composerMenuRef.current.contains(event.target)
+      ) {
+        setComposerMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleDocumentClick);
+    return () => document.removeEventListener("mousedown", handleDocumentClick);
+  }, []);
+
+  useEffect(() => {
     try {
       const storedWatchlist = window.localStorage.getItem(
         "truemarkets-watchlist-assets",
@@ -3164,7 +3295,16 @@ export default function CryptoDashboard() {
   const sendPrompt = useCallback(
     async (rawPrompt: string) => {
       const text = rawPrompt.trim();
-      if (!text || streaming) return;
+      if (streaming) return;
+
+      const attachmentsForRequest = pendingAttachments;
+      const deepResearchForRequest = deepResearchMode;
+      const hasAttachments = attachmentsForRequest.length > 0;
+      if (!text && !hasAttachments) return;
+
+      const effectiveText =
+        text || "Please analyze the uploaded files and summarize key insights.";
+
       const latestPortfolio = [...messages]
         .reverse()
         .find((m) => m.portfolio)?.portfolio;
@@ -3172,6 +3312,8 @@ export default function CryptoDashboard() {
       const newsContext = buildNewsContext(messages);
 
       setQuery("");
+      setPendingAttachments([]);
+      setComposerMenuOpen(false);
       setShowChat(true);
       setStreaming(true);
 
@@ -3180,7 +3322,18 @@ export default function CryptoDashboard() {
 
       setMessages((prev) => [
         ...prev,
-        { id: userId, role: "user", content: text },
+        {
+          id: userId,
+          role: "user",
+          content:
+            effectiveText +
+            (deepResearchForRequest ? "\n\n[Deep Research enabled]" : "") +
+            (hasAttachments
+              ? `\n\n[Attached: ${attachmentsForRequest
+                  .map((attachment) => attachment.name)
+                  .join(", ")}]`
+              : ""),
+        },
         { id: assistantId, role: "assistant", content: "" },
       ]);
 
@@ -3189,9 +3342,11 @@ export default function CryptoDashboard() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            message: text,
+            message: effectiveText,
             portfolioContext,
             newsContext,
+            deepResearch: deepResearchForRequest,
+            attachments: attachmentsForRequest,
           }),
         });
         if (!res.body) throw new Error("No body");
@@ -3349,7 +3504,7 @@ export default function CryptoDashboard() {
 
             void enrichAssistantMessage({
               messageId: assistantId,
-              userText: text,
+              userText: effectiveText,
               coinName: name,
               coinSymbol: symbol,
             });
@@ -3384,7 +3539,7 @@ export default function CryptoDashboard() {
             const firstSymbol = portfolioData.positions?.[0]?.symbol;
             void enrichAssistantMessage({
               messageId: assistantId,
-              userText: text,
+              userText: effectiveText,
               coinSymbol: firstSymbol,
             });
           } catch {
@@ -3399,7 +3554,7 @@ export default function CryptoDashboard() {
         } else {
           void enrichAssistantMessage({
             messageId: assistantId,
-            userText: text,
+            userText: effectiveText,
           });
         }
       } catch {
@@ -3412,7 +3567,15 @@ export default function CryptoDashboard() {
         setStreaming(false);
       }
     },
-    [coins, enrichAssistantMessage, messages, streaming, updateMessage],
+    [
+      coins,
+      deepResearchMode,
+      enrichAssistantMessage,
+      messages,
+      pendingAttachments,
+      streaming,
+      updateMessage,
+    ],
   );
 
   const handleSearch = (e: React.FormEvent) => {
@@ -3420,6 +3583,98 @@ export default function CryptoDashboard() {
     if (query.trim()) {
       router.push(`/chat?q=${encodeURIComponent(query.trim())}`);
     }
+  };
+
+  const removePendingAttachment = useCallback((name: string) => {
+    setPendingAttachments((prev) =>
+      prev.filter((attachment) => attachment.name !== name),
+    );
+  }, []);
+
+  const handleFilesSelected = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const selected = Array.from(files).slice(0, MAX_CHAT_ATTACHMENTS);
+    const parsedAttachments = await Promise.all(
+      selected.map(async (file): Promise<ChatAttachmentPayload> => {
+        if (file.type.startsWith("image/")) {
+          const imageDataUrl = await readFileAsDataUrl(file);
+          return {
+            name: file.name,
+            mimeType: file.type || "image/*",
+            kind: "image",
+            size: file.size,
+            imageDataUrl,
+          };
+        }
+
+        if (isTextLikeFile(file)) {
+          const textContent = (await file.text()).slice(
+            0,
+            MAX_ATTACHMENT_TEXT_CHARS,
+          );
+          return {
+            name: file.name,
+            mimeType: file.type || "text/plain",
+            kind: "text",
+            size: file.size,
+            textContent,
+          };
+        }
+
+        return {
+          name: file.name,
+          mimeType: file.type || "application/octet-stream",
+          kind: "binary",
+          size: file.size,
+        };
+      }),
+    );
+
+    setPendingAttachments((prev) => {
+      const existingNames = new Set(prev.map((item) => item.name));
+      const deduped = parsedAttachments.filter(
+        (item) => !existingNames.has(item.name),
+      );
+      return [...prev, ...deduped].slice(0, MAX_CHAT_ATTACHMENTS);
+    });
+  }, []);
+
+  const openUploadPicker = useCallback(() => {
+    setComposerMenuOpen(false);
+    fileInputRef.current?.click();
+  }, []);
+
+  const enableDeepResearch = useCallback(() => {
+    setDeepResearchMode(true);
+    setComposerMenuOpen(false);
+  }, []);
+
+  const handleComposerSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim() && pendingAttachments.length === 0) return;
+
+    const pendingRequest = {
+      query,
+      deepResearch: deepResearchMode,
+      attachments: pendingAttachments,
+    };
+
+    try {
+      window.sessionStorage.setItem(
+        PENDING_CHAT_REQUEST_STORAGE_KEY,
+        JSON.stringify(pendingRequest),
+      );
+    } catch {
+      toast("Could not cache attachments. Opening chat with your text only.");
+      if (query.trim()) {
+        router.push(`/chat?q=${encodeURIComponent(query.trim())}`);
+        return;
+      }
+    }
+
+    setComposerMenuOpen(false);
+    router.push("/chat");
   };
 
   const addWatchlistAsset = useCallback((assetId: string) => {
@@ -3448,6 +3703,10 @@ export default function CryptoDashboard() {
     setPortfolioConnected(true);
   }, []);
 
+  const handleSetAlert = useCallback(() => {
+    toast("Coming Soon");
+  }, []);
+
   const saveWatchlistAssets = useCallback(() => {
     const nextWatchlist = Array.from(new Set(watchlistDraftIdsRef.current));
     if (nextWatchlist.length === 0) return;
@@ -3472,6 +3731,7 @@ export default function CryptoDashboard() {
     if (
       pathname === "/" ||
       pathname === "/watchlist" ||
+      pathname === "/alerts" ||
       pathname === "/portfolio" ||
       pathname === "/trending"
     ) {
@@ -3543,6 +3803,23 @@ export default function CryptoDashboard() {
   const bitcoin = coins.find((coin) => coin.id === "bitcoin");
   const ethereum = coins.find((coin) => coin.id === "ethereum");
   const solana = coins.find((coin) => coin.id === "solana");
+  const alertSelectableCoins = [...coins].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const normalizedAlertAssetNeedle = alertAssetSearch.trim().toLowerCase();
+  const alertsAsset =
+    alertSelectableCoins.find(
+      (coin) =>
+        coin.symbol.toLowerCase() === normalizedAlertAssetNeedle ||
+        coin.id.toLowerCase() === normalizedAlertAssetNeedle ||
+        coin.name.toLowerCase() === normalizedAlertAssetNeedle,
+    ) ??
+    coins.find((coin) => coin.id === "bitcoin") ??
+    coins[0];
+  const alertsAssetSymbol =
+    alertsAsset?.symbol?.toUpperCase() ||
+    alertAssetSearch.trim().toUpperCase() ||
+    "BTC";
   const solDominancePct =
     globalData && solana && globalData.total_market_cap.usd > 0
       ? (solana.market_cap / globalData.total_market_cap.usd) * 100
@@ -3550,9 +3827,7 @@ export default function CryptoDashboard() {
   const watchlistCoins = watchlistAssetIds
     .map((assetId) => coins.find((coin) => coin.id === assetId))
     .filter((coin): coin is CoinData => Boolean(coin));
-  const watchlistSelectableCoins = [...coins].sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+  const watchlistSelectableCoins = alertSelectableCoins;
   const watchlistSearchNeedle = watchlistAssetSearch.trim().toLowerCase();
   const watchlistFilteredChoices = watchlistSelectableCoins.filter((coin) => {
     if (!watchlistSearchNeedle) return !watchlistDraftIds.includes(coin.id);
@@ -3879,6 +4154,7 @@ export default function CryptoDashboard() {
     { label: "Predictions", href: "/predictions" },
     { label: "Trending", href: "/trending" },
     { label: "Watchlist", href: "/watchlist" },
+    { label: "Alerts", href: "/alerts" },
     { label: "Portfolio", href: "/portfolio" },
   ] as const;
 
@@ -4207,6 +4483,401 @@ export default function CryptoDashboard() {
                         </a>
                       ))
                     )}
+                  </div>
+                </section>
+              </div>
+            ) : pathname === "/alerts" ? (
+              <div ref={homeSectionRef} className="scroll-mt-24 space-y-6">
+                <section className="space-y-4">
+                  <div>
+                    <h1 className="text-[22px] font-semibold text-zinc-100">
+                      Alerts
+                    </h1>
+                    <p className="mt-1 text-sm text-zinc-500">
+                      Build custom crypto alerts for price, percentage changes,
+                      periodic checks, and volume spikes.
+                    </p>
+                  </div>
+
+                  <div className="rounded-[22px] border border-white/[0.08] bg-[#0a0a0a] p-4 shadow-[0_18px_46px_rgba(0,0,0,0.36)] md:p-5">
+                    <Tabs
+                      value={alertsMode}
+                      onValueChange={(value) =>
+                        setAlertsMode(value as AlertsMode)
+                      }
+                      className="space-y-4"
+                    >
+                      <div className="overflow-x-auto pb-1">
+                        <TabsList className="min-w-max border-white/[0.12] bg-[#111111]">
+                          {ALERTS_TABS.map((tab) => (
+                            <TabsTrigger
+                              key={tab.key}
+                              value={tab.key}
+                              className="text-zinc-400 data-[state=active]:bg-white/[0.1] data-[state=active]:text-zinc-100"
+                            >
+                              {tab.label}
+                            </TabsTrigger>
+                          ))}
+                        </TabsList>
+                      </div>
+
+                      <TabsContent value="price" className="space-y-4">
+                        <div>
+                          <h2 className="text-[24px] font-semibold text-zinc-100">
+                            Price Alert
+                          </h2>
+                          <p className="mt-1 text-[14px] text-zinc-500">
+                            Get notified when a coin goes above or below your
+                            target price.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[18px] leading-[2] text-zinc-100">
+                          Send me an{" "}
+                          <select
+                            value={alertChannel}
+                            onChange={(event) =>
+                              setAlertChannel(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_CHANNEL_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          as soon as{" "}
+                          <select
+                            value={alertAssetSearch}
+                            onChange={(event) =>
+                              setAlertAssetSearch(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_ASSET_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          goes{" "}
+                          <select
+                            value={alertDirection}
+                            onChange={(event) =>
+                              setAlertDirection(
+                                event.target.value as "above" | "below",
+                              )
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            <option value="above">above</option>
+                            <option value="below">below</option>
+                          </select>{" "}
+                          the price of{" "}
+                          <input
+                            value={alertTargetPrice}
+                            onChange={(event) =>
+                              setAlertTargetPrice(event.target.value)
+                            }
+                            inputMode="decimal"
+                            placeholder="0.0"
+                            className="w-[120px] rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 placeholder:text-zinc-500 outline-none"
+                          />{" "}
+                          on{" "}
+                          <select
+                            value={alertExchange}
+                            onChange={(event) =>
+                              setAlertExchange(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_EXCHANGE_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                          .
+                          <button
+                            type="button"
+                            onClick={handleSetAlert}
+                            className="ml-2 w-fit rounded-full bg-white px-5 py-1.5 text-sm font-semibold tracking-[0.08em] text-black transition-colors hover:bg-zinc-200"
+                          >
+                            Set Alert
+                          </button>
+                        </div>
+                      </TabsContent>
+
+                      <TabsContent value="percentage" className="space-y-4">
+                        <div>
+                          <h2 className="text-[24px] font-semibold text-zinc-100">
+                            Percentage Price Alert
+                          </h2>
+                          <p className="mt-1 text-[14px] text-zinc-500">
+                            Get notified when a coin changes in value by a
+                            specific percent.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[18px] leading-[2] text-zinc-100">
+                          Send me an{" "}
+                          <select
+                            value={alertChannel}
+                            onChange={(event) =>
+                              setAlertChannel(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_CHANNEL_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          as soon as{" "}
+                          <select
+                            value={alertAssetSearch}
+                            onChange={(event) =>
+                              setAlertAssetSearch(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_ASSET_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          <select
+                            value={alertPercentageDirection}
+                            onChange={(event) =>
+                              setAlertPercentageDirection(
+                                event.target.value as "up" | "down",
+                              )
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            <option value="up">goes up</option>
+                            <option value="down">goes down</option>
+                          </select>{" "}
+                          by{" "}
+                          <input
+                            value={alertPercentageChange}
+                            onChange={(event) =>
+                              setAlertPercentageChange(event.target.value)
+                            }
+                            inputMode="decimal"
+                            placeholder="0"
+                            className="w-[96px] rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 placeholder:text-zinc-500 outline-none"
+                          />{" "}
+                          percent within the last{" "}
+                          <select
+                            value={alertPercentageWindow}
+                            onChange={(event) =>
+                              setAlertPercentageWindow(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_PERCENTAGE_WINDOW_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          on{" "}
+                          <select
+                            value={alertExchange}
+                            onChange={(event) =>
+                              setAlertExchange(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_EXCHANGE_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                          .
+                          <button
+                            type="button"
+                            onClick={handleSetAlert}
+                            className="ml-2 w-fit rounded-full bg-white px-5 py-1.5 text-sm font-semibold tracking-[0.08em] text-black transition-colors hover:bg-zinc-200"
+                          >
+                            Set Alert
+                          </button>
+                        </div>
+                      </TabsContent>
+
+                      <TabsContent value="periodic" className="space-y-4">
+                        <div>
+                          <h2 className="text-[24px] font-semibold text-zinc-100">
+                            Periodic Price Alerts
+                          </h2>
+                          <p className="mt-1 text-[14px] text-zinc-500">
+                            Get notified of the price of an asset at regular
+                            intervals.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[18px] leading-[2] text-zinc-100">
+                          Send me an{" "}
+                          <select
+                            value={alertChannel}
+                            onChange={(event) =>
+                              setAlertChannel(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_CHANNEL_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          every{" "}
+                          <select
+                            value={alertPeriodicInterval}
+                            onChange={(event) =>
+                              setAlertPeriodicInterval(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_PERIODIC_INTERVAL_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          with the current price of{" "}
+                          <select
+                            value={alertAssetSearch}
+                            onChange={(event) =>
+                              setAlertAssetSearch(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_ASSET_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          on{" "}
+                          <select
+                            value={alertExchange}
+                            onChange={(event) =>
+                              setAlertExchange(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_EXCHANGE_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                          .
+                          <button
+                            type="button"
+                            onClick={handleSetAlert}
+                            className="ml-2 w-fit rounded-full bg-white px-5 py-1.5 text-sm font-semibold tracking-[0.08em] text-black transition-colors hover:bg-zinc-200"
+                          >
+                            Set Alert
+                          </button>
+                        </div>
+                      </TabsContent>
+
+                      <TabsContent value="volume" className="space-y-4">
+                        <div>
+                          <h2 className="text-[24px] font-semibold text-zinc-100">
+                            Volume Alert
+                          </h2>
+                          <p className="mt-1 text-[14px] text-zinc-500">
+                            Get notified of unusual trading volume on crypto
+                            exchanges.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[18px] leading-[2] text-zinc-100">
+                          Send me an{" "}
+                          <select
+                            value={alertChannel}
+                            onChange={(event) =>
+                              setAlertChannel(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_CHANNEL_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          as soon as the trading volume of{" "}
+                          <select
+                            value={alertAssetSearch}
+                            onChange={(event) =>
+                              setAlertAssetSearch(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_ASSET_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          on{" "}
+                          <select
+                            value={alertExchange}
+                            onChange={(event) =>
+                              setAlertExchange(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_EXCHANGE_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          increases by{" "}
+                          <select
+                            value={alertVolumeMultiple}
+                            onChange={(event) =>
+                              setAlertVolumeMultiple(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_VOLUME_MULTIPLE_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>{" "}
+                          within the last{" "}
+                          <select
+                            value={alertVolumeWindow}
+                            onChange={(event) =>
+                              setAlertVolumeWindow(event.target.value)
+                            }
+                            className="rounded-xl border border-white/[0.2] bg-[#121212] px-3 py-1.5 text-[18px] text-zinc-100 outline-none"
+                          >
+                            {ALERT_VOLUME_WINDOW_OPTIONS.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                          .
+                          <button
+                            type="button"
+                            onClick={handleSetAlert}
+                            className="ml-2 w-fit rounded-full bg-white px-5 py-1.5 text-sm font-semibold tracking-[0.08em] text-black transition-colors hover:bg-zinc-200"
+                          >
+                            Set Alert
+                          </button>
+                        </div>
+                      </TabsContent>
+                    </Tabs>
                   </div>
                 </section>
               </div>
@@ -5982,14 +6653,85 @@ export default function CryptoDashboard() {
 
       <div className="fixed bottom-0 left-[62px] right-0 z-50 bg-linear-to-t from-[#000000] via-[#000000]/95 to-transparent px-4 pb-4 pt-6 md:left-[72px] md:px-6 xl:px-8 2xl:px-10">
         <div className="mx-auto max-w-[1480px]">
-          <form onSubmit={handleSearch}>
-            <div className="flex items-center gap-3 rounded-2xl border border-white/12 bg-[#0a0a0a] px-4 py-3 shadow-[0_0_40px_rgba(0,0,0,0.8)] transition-colors hover:border-white/18 focus-within:border-white/26">
-              <Search className="h-4 w-4 shrink-0 text-zinc-500" />
+          <form onSubmit={handleComposerSubmit}>
+            <div
+              ref={composerMenuRef}
+              className="relative flex items-center gap-3 rounded-2xl border border-white/12 bg-[#0a0a0a] px-4 py-3 shadow-[0_0_40px_rgba(0,0,0,0.8)] transition-colors hover:border-white/18 focus-within:border-white/26"
+            >
+              <button
+                type="button"
+                onClick={() => setComposerMenuOpen((prev) => !prev)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.12] text-zinc-400 transition-colors hover:border-white/[0.2] hover:text-zinc-200"
+                aria-label="Open chat actions"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+
+              {composerMenuOpen && (
+                <div className="absolute bottom-12 left-0 z-20 w-64 rounded-2xl border border-white/[0.08] bg-[#0a0a0a] p-1.5 shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
+                  <button
+                    type="button"
+                    onClick={openUploadPicker}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-white/[0.05] hover:text-zinc-100"
+                  >
+                    <span>Upload files or images</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enableDeepResearch}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-white/[0.05] hover:text-zinc-100"
+                  >
+                    <span>Deep research</span>
+                  </button>
+                </div>
+              )}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.html,.css,.xml,.yaml,.yml,.pdf"
+                className="hidden"
+                onChange={(e) => {
+                  void handleFilesSelected(e.target.files);
+                  e.currentTarget.value = "";
+                }}
+              />
+
+              {deepResearchMode && (
+                <button
+                  type="button"
+                  onClick={() => setDeepResearchMode(false)}
+                  className="inline-flex items-center gap-1 rounded-full border border-blue-400/35 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-300 transition-colors hover:bg-blue-500/20"
+                >
+                  Deep Research
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+
+              {pendingAttachments.length > 0 && (
+                <div className="flex max-w-[38%] items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+                  {pendingAttachments.map((attachment) => (
+                    <button
+                      key={attachment.name}
+                      type="button"
+                      onClick={() => removePendingAttachment(attachment.name)}
+                      className="inline-flex items-center gap-1 rounded-full border border-white/[0.14] bg-white/[0.04] px-2 py-1 text-[10px] text-zinc-300"
+                    >
+                      <span className="max-w-[120px] truncate">
+                        {attachment.name}
+                      </span>
+                      <X className="h-3 w-3" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Ask about crypto, stocks, prices, trends..."
+                placeholder={composerPlaceholder}
                 className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 outline-none"
                 disabled={streaming}
               />
@@ -6005,7 +6747,11 @@ export default function CryptoDashboard() {
               )}
               <button
                 type="submit"
-                disabled={!query.trim() || streaming}
+                disabled={
+                  (query.trim().length === 0 &&
+                    pendingAttachments.length === 0) ||
+                  streaming
+                }
                 className="flex shrink-0 items-center gap-1.5 rounded-xl bg-white px-3 py-1.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-30"
               >
                 {streaming ? (
