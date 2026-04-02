@@ -358,6 +358,17 @@ const PREDICTION_BROWSE_FILTERS: Array<{
   { key: "price-targets", label: "Price Targets" },
 ];
 
+const DEFAULT_WATCHLIST_ASSET_IDS = [
+  "bitcoin",
+  "ethereum",
+  "solana",
+  "ripple",
+  "dogecoin",
+  "chainlink",
+] as const;
+
+const PORTFOLIO_CONNECTED_STORAGE_KEY = "truemarkets-portfolio-connected";
+
 function fmtVolumeMultiple(volume: number, marketCap: number): string {
   if (
     !Number.isFinite(volume) ||
@@ -778,6 +789,9 @@ function MarketSentimentMeter({ score }: { score: number }) {
   );
 }
 
+const CARD_SHELL_CLASS =
+  "rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] transition-colors hover:border-white/[0.12] hover:bg-[#0d0d0f]";
+
 function PredictionBrowseCard({ market }: { market: PredictionMarket }) {
   const options = [...(market.discussionOptions ?? [])]
     .filter((option) => option.label)
@@ -795,7 +809,7 @@ function PredictionBrowseCard({ market }: { market: PredictionMarket }) {
       }
       target="_blank"
       rel="noopener noreferrer"
-      className="block rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] p-4 transition-colors hover:border-white/[0.12] hover:bg-[#0d0d0f]"
+      className={`block p-4 ${CARD_SHELL_CLASS}`}
     >
       <h3 className="mb-1 line-clamp-2 text-[15px] font-semibold leading-snug text-zinc-100">
         {normalizeDiscussionQuestion(market.question)}
@@ -2303,7 +2317,7 @@ function PortfolioCard({ data }: { data: PortfolioData }) {
   const chip = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 
   return (
-    <div className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl overflow-hidden w-full">
+    <div className={`w-full overflow-hidden ${CARD_SHELL_CLASS}`}>
       <div className="px-4 py-3 border-b border-white/[0.05]">
         <div className="flex items-center justify-between gap-2">
           <div>
@@ -2445,7 +2459,7 @@ function PortfolioStatTile({
         : "text-zinc-100";
 
   return (
-    <div className="border border-white/[0.07] bg-[#0a0a0a] px-4 py-3">
+    <div className={`px-4 py-3 ${CARD_SHELL_CLASS}`}>
       <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
         {label}
       </p>
@@ -2916,6 +2930,15 @@ export default function CryptoDashboard() {
   const [predictionSearch, setPredictionSearch] = useState("");
   const [predictionFilter, setPredictionFilter] =
     useState<PredictionBrowseFilter>("all");
+  const [watchlistAssetIds, setWatchlistAssetIds] = useState<string[]>([
+    ...DEFAULT_WATCHLIST_ASSET_IDS,
+  ]);
+  const [watchlistModalOpen, setWatchlistModalOpen] = useState(false);
+  const [watchlistDraftIds, setWatchlistDraftIds] = useState<string[]>([
+    ...DEFAULT_WATCHLIST_ASSET_IDS,
+  ]);
+  const [watchlistRevision, setWatchlistRevision] = useState(0);
+  const [watchlistAssetSearch, setWatchlistAssetSearch] = useState("");
   const [watchlistNews, setWatchlistNews] = useState<NewsItem[]>([]);
   const [watchlistNewsLoading, setWatchlistNewsLoading] = useState(false);
   const [trendingNews, setTrendingNews] = useState<NewsItem[]>([]);
@@ -2923,6 +2946,8 @@ export default function CryptoDashboard() {
   const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(
     null,
   );
+  const [portfolioGateReady, setPortfolioGateReady] = useState(false);
+  const [portfolioConnected, setPortfolioConnected] = useState(false);
   const [portfolioRouteLoading, setPortfolioRouteLoading] = useState(false);
   const [portfolioRouteError, setPortfolioRouteError] = useState<string | null>(
     null,
@@ -2936,6 +2961,7 @@ export default function CryptoDashboard() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const homeSectionRef = useRef<HTMLDivElement>(null);
   const predictionsSectionRef = useRef<HTMLElement>(null);
+  const watchlistDraftIdsRef = useRef<string[]>(watchlistDraftIds);
   const deferredPredictionSearch = useDeferredValue(predictionSearch);
 
   const fetchData = useCallback(
@@ -2995,7 +3021,7 @@ export default function CryptoDashboard() {
 
   const fetchPortfolioRouteData = useCallback(
     async (silent = false) => {
-      if (pathname !== "/portfolio") return;
+      if (pathname !== "/portfolio" || !portfolioConnected) return;
 
       if (!silent) setPortfolioRouteLoading(true);
       setPortfolioRouteError(null);
@@ -3020,11 +3046,17 @@ export default function CryptoDashboard() {
         setPortfolioRouteLoading(false);
       }
     },
-    [pathname],
+    [pathname, portfolioConnected],
   );
 
   useEffect(() => {
-    if (pathname !== "/portfolio") return;
+    if (
+      pathname !== "/portfolio" ||
+      !portfolioGateReady ||
+      !portfolioConnected
+    ) {
+      return;
+    }
 
     void fetchPortfolioRouteData();
     const timer = setInterval(() => {
@@ -3032,11 +3064,57 @@ export default function CryptoDashboard() {
     }, 60_000);
 
     return () => clearInterval(timer);
-  }, [fetchPortfolioRouteData, pathname]);
+  }, [
+    fetchPortfolioRouteData,
+    pathname,
+    portfolioConnected,
+    portfolioGateReady,
+  ]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(
+        PORTFOLIO_CONNECTED_STORAGE_KEY,
+      );
+      setPortfolioConnected(stored === "1");
+    } catch {
+      setPortfolioConnected(false);
+    } finally {
+      setPortfolioGateReady(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (showChat) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, showChat]);
+
+  useEffect(() => {
+    try {
+      const storedWatchlist = window.localStorage.getItem(
+        "truemarkets-watchlist-assets",
+      );
+      if (!storedWatchlist) return;
+
+      const parsed = JSON.parse(storedWatchlist) as string[];
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+
+      setWatchlistAssetIds(parsed);
+      setWatchlistDraftIds(parsed);
+    } catch {
+      // Ignore invalid local watchlist state and fall back to defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      "truemarkets-watchlist-assets",
+      JSON.stringify(watchlistAssetIds),
+    );
+  }, [watchlistAssetIds]);
+
+  useEffect(() => {
+    watchlistDraftIdsRef.current = watchlistDraftIds;
+  }, [watchlistDraftIds]);
 
   const updateMessage = useCallback(
     (messageId: string, updater: (prev: ChatMessage) => ChatMessage) => {
@@ -3344,6 +3422,42 @@ export default function CryptoDashboard() {
     }
   };
 
+  const addWatchlistAsset = useCallback((assetId: string) => {
+    setWatchlistDraftIds((prev) =>
+      prev.includes(assetId) ? prev : [...prev, assetId],
+    );
+  }, []);
+
+  const removeWatchlistAsset = useCallback((assetId: string) => {
+    setWatchlistDraftIds((prev) => prev.filter((id) => id !== assetId));
+  }, []);
+
+  const openWatchlistModal = useCallback(() => {
+    setWatchlistDraftIds(watchlistAssetIds);
+    setWatchlistAssetSearch("");
+    setWatchlistModalOpen(true);
+  }, [watchlistAssetIds]);
+
+  const handleConnectPortfolio = useCallback(() => {
+    try {
+      window.localStorage.setItem(PORTFOLIO_CONNECTED_STORAGE_KEY, "1");
+    } catch {
+      // Ignore localStorage failures and still continue in-memory for this session.
+    }
+
+    setPortfolioConnected(true);
+  }, []);
+
+  const saveWatchlistAssets = useCallback(() => {
+    const nextWatchlist = Array.from(new Set(watchlistDraftIdsRef.current));
+    if (nextWatchlist.length === 0) return;
+
+    setWatchlistAssetIds(nextWatchlist);
+    setWatchlistDraftIds(nextWatchlist);
+    setWatchlistRevision((prev) => prev + 1);
+    setWatchlistModalOpen(false);
+  }, []);
+
   useEffect(() => {
     if (loading) return;
 
@@ -3429,15 +3543,27 @@ export default function CryptoDashboard() {
   const bitcoin = coins.find((coin) => coin.id === "bitcoin");
   const ethereum = coins.find((coin) => coin.id === "ethereum");
   const solana = coins.find((coin) => coin.id === "solana");
-  const watchlistAssetIds = [
-    "bitcoin",
-    "ethereum",
-    "solana",
-    "ripple",
-    "dogecoin",
-    "chainlink",
-  ];
+  const solDominancePct =
+    globalData && solana && globalData.total_market_cap.usd > 0
+      ? (solana.market_cap / globalData.total_market_cap.usd) * 100
+      : null;
   const watchlistCoins = watchlistAssetIds
+    .map((assetId) => coins.find((coin) => coin.id === assetId))
+    .filter((coin): coin is CoinData => Boolean(coin));
+  const watchlistSelectableCoins = [...coins].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const watchlistSearchNeedle = watchlistAssetSearch.trim().toLowerCase();
+  const watchlistFilteredChoices = watchlistSelectableCoins.filter((coin) => {
+    if (!watchlistSearchNeedle) return !watchlistDraftIds.includes(coin.id);
+
+    const haystack = `${coin.name} ${coin.symbol}`.toLowerCase();
+    return (
+      haystack.includes(watchlistSearchNeedle) &&
+      !watchlistDraftIds.includes(coin.id)
+    );
+  });
+  const watchlistDraftCoins = watchlistDraftIds
     .map((assetId) => coins.find((coin) => coin.id === assetId))
     .filter((coin): coin is CoinData => Boolean(coin));
   const get1hChange = (coin: CoinData) =>
@@ -3503,9 +3629,12 @@ export default function CryptoDashboard() {
   );
   const watchlistMovers = [...watchlistCoins].sort(
     (a, b) =>
-      Math.abs(b.price_change_percentage_24h) -
-      Math.abs(a.price_change_percentage_24h),
+      Math.abs(b.price_change_percentage_24h ?? 0) -
+      Math.abs(a.price_change_percentage_24h ?? 0),
   );
+  const watchlistMoversKey = `${watchlistRevision}:${watchlistMovers
+    .map((coin) => coin.id)
+    .join("|")}`;
   const notablePriceMovers = watchlistMovers.slice(0, 3);
   const trendingCoins = [...coins]
     .sort((a, b) => {
@@ -3917,6 +4046,7 @@ export default function CryptoDashboard() {
                     </h2>
                     <button
                       type="button"
+                      onClick={openWatchlistModal}
                       className="text-xs font-medium text-zinc-500 transition-colors hover:text-zinc-300"
                     >
                       Manage Assets
@@ -3981,7 +4111,10 @@ export default function CryptoDashboard() {
                   <h2 className="text-sm font-medium text-zinc-200">
                     Watchlist Movers
                   </h2>
-                  <WatchlistMoversChart coins={watchlistMovers} />
+                  <WatchlistMoversChart
+                    key={watchlistMoversKey}
+                    coins={watchlistMovers}
+                  />
                 </section>
 
                 <section className="space-y-3">
@@ -4080,198 +4213,302 @@ export default function CryptoDashboard() {
             ) : pathname === "/portfolio" ? (
               <div ref={homeSectionRef} className="scroll-mt-24 space-y-6">
                 <section className="space-y-3">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-                    <div>
-                      <h1 className="text-[22px] font-semibold text-zinc-100">
-                        Portfolio
-                      </h1>
-                      <p className="mt-1 text-sm text-zinc-500">
-                        Live Alpaca account data from your configured API
-                        credentials.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
-                        {portfolioData
-                          ? formatRelativeUpdate(
-                              new Date(portfolioData.fetched_at).getTime(),
-                            )
-                          : "Waiting for account data"}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void fetchPortfolioRouteData();
-                        }}
-                        disabled={portfolioRouteLoading}
-                        className="inline-flex items-center gap-2 border border-white/[0.08] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-300 transition-colors hover:border-white/[0.12] hover:text-white disabled:cursor-not-allowed disabled:text-zinc-600"
-                      >
-                        <RefreshCw
-                          className={`h-3.5 w-3.5 ${
-                            portfolioRouteLoading ? "animate-spin" : ""
-                          }`}
-                        />
-                        Refresh
-                      </button>
-                    </div>
-                  </div>
-
-                  {portfolioRouteError ? (
-                    <div className="border border-red-500/20 bg-red-500/5 px-4 py-4 text-sm text-red-300">
-                      {portfolioRouteError}
-                    </div>
-                  ) : portfolioRouteLoading && !portfolioData ? (
+                  {!portfolioGateReady ? (
                     <div className="flex items-center gap-3 border border-white/[0.07] bg-[#0a0a0a] px-4 py-8 text-sm text-zinc-500">
                       <RefreshCw className="h-4 w-4 animate-spin" />
-                      Loading Alpaca account data…
+                      Preparing portfolio access...
                     </div>
-                  ) : portfolioData ? (
-                    <>
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        <PortfolioStatTile
-                          label="Equity"
-                          value={fmtBig(portfolioData.summary.equity)}
-                          detail={`Prev close ${fmtBig(
-                            portfolioData.summary.last_equity,
-                          )}`}
-                        />
-                        <PortfolioStatTile
-                          label="Cash"
-                          value={fmtBig(portfolioData.summary.cash)}
-                          detail={`Buying power ${fmtBig(
-                            portfolioData.summary.buying_power,
-                          )}`}
-                        />
-                        <PortfolioStatTile
-                          label="Day P/L"
-                          value={`${
-                            portfolioData.summary.day_pnl >= 0 ? "+" : ""
-                          }${fmtBig(portfolioData.summary.day_pnl)}`}
-                          tone={
-                            portfolioData.summary.day_pnl >= 0
-                              ? "positive"
-                              : "negative"
-                          }
-                          detail={`${
-                            portfolioData.summary.day_pnl_pct >= 0 ? "+" : ""
-                          }${portfolioData.summary.day_pnl_pct.toFixed(2)}%`}
-                        />
-                        <PortfolioStatTile
-                          label="Unrealized P/L"
-                          value={`${
-                            portfolioData.summary.unrealized_pnl_total >= 0
-                              ? "+"
-                              : ""
-                          }${fmtBig(portfolioData.summary.unrealized_pnl_total)}`}
-                          tone={
-                            portfolioData.summary.unrealized_pnl_total >= 0
-                              ? "positive"
-                              : "negative"
-                          }
-                          detail={`${
-                            portfolioData.summary.unrealized_pnl_pct >= 0
-                              ? "+"
-                              : ""
-                          }${portfolioData.summary.unrealized_pnl_pct.toFixed(
-                            2,
-                          )}%`}
-                        />
-                        <PortfolioStatTile
-                          label="Open Positions"
-                          value={String(portfolioData.summary.positions_count)}
-                          detail={`Pending orders ${portfolioData.summary.pending_orders_count}`}
-                        />
-                        <PortfolioStatTile
-                          label="Filled Orders"
-                          value={String(
-                            portfolioData.summary.filled_orders_count,
-                          )}
-                          detail={`Partially filled ${portfolioData.summary.partially_filled_orders_count}`}
-                        />
+                  ) : !portfolioConnected ? (
+                    <div className="mx-auto max-w-[580px] text-center">
+                      <div className="rounded-[20px] border border-white/[0.08] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),rgba(10,10,10,0.95)_55%)] px-5 py-6 shadow-[0_18px_56px_rgba(0,0,0,0.42)] md:px-7 md:py-7">
+                        <div className="mx-auto mb-4 flex w-fit items-center gap-2.5 rounded-xl border border-white/[0.08] bg-black/25 px-3 py-2">
+                          <Image
+                            src="/logo.svg"
+                            alt="TrueMarkets"
+                            width={22}
+                            height={26}
+                            className="h-6 w-auto opacity-85"
+                          />
+                          <span className="text-sm text-zinc-500">↔</span>
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.95]">
+                            <BarChart2 className="h-3.5 w-3.5 text-black" />
+                          </div>
+                        </div>
+
+                        <h1 className="text-[26px] font-semibold leading-tight text-zinc-100 md:text-[30px]">
+                          Connect your financial accounts
+                        </h1>
+                        <p className="mx-auto mt-2 max-w-[470px] text-[15px] leading-6 text-zinc-400">
+                          Securely link your broker to unlock live holdings,
+                          positions, and order activity in one place.
+                        </p>
+
+                        <div className="mx-auto mt-6 max-w-[470px] space-y-3 text-left">
+                          <div className="flex items-start gap-2.5">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
+                              <Zap className="h-3.5 w-3.5 text-zinc-300" />
+                            </span>
+                            <div>
+                              <p className="text-[17px] font-medium text-zinc-100">
+                                Instant account sync
+                              </p>
+                              <p className="mt-0.5 text-[14px] leading-5 text-zinc-400">
+                                See holdings, transactions, and liabilities in
+                                one place, updated in real time.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-start gap-2.5">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
+                              <Globe className="h-3.5 w-3.5 text-zinc-300" />
+                            </span>
+                            <div>
+                              <p className="text-[17px] font-medium text-zinc-100">
+                                AI-powered insights
+                              </p>
+                              <p className="mt-0.5 text-[14px] leading-5 text-zinc-400">
+                                Ask anything about your portfolio, spending,
+                                risks, and account activity.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-start gap-2.5">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
+                              <RefreshCw className="h-3.5 w-3.5 text-zinc-300" />
+                            </span>
+                            <div>
+                              <p className="text-[17px] font-medium text-zinc-100">
+                                Bank-level security
+                              </p>
+                              <p className="mt-0.5 text-[14px] leading-5 text-zinc-400">
+                                256-bit encryption with read-only access to your
+                                account data.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleConnectPortfolio}
+                          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.22] bg-white px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200"
+                        >
+                          Connect Account
+                        </button>
                       </div>
 
-                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.85fr)]">
-                        <section className="space-y-2">
-                          <h2 className="text-sm font-medium text-zinc-200">
-                            Open Positions
-                          </h2>
-                          <PortfolioPositionsTable
-                            positions={portfolioData.positions}
-                          />
-                        </section>
-
-                        <div className="space-y-4">
-                          <section className="space-y-2">
-                            <h2 className="text-sm font-medium text-zinc-200">
-                              Account Details
-                            </h2>
-                            <div className="border-y border-white/[0.07] bg-[#0a0a0a]">
-                              <div className="grid gap-px bg-white/[0.05] md:grid-cols-2">
-                                <div className="bg-[#0a0a0a] px-4 py-3">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                    Account
-                                  </p>
-                                  <p className="mt-2 text-sm font-medium text-zinc-100">
-                                    {portfolioData.account.account_number
-                                      ? `••••${String(
-                                          portfolioData.account.account_number,
-                                        ).slice(-4)}`
-                                      : "--"}
-                                  </p>
-                                </div>
-                                <div className="bg-[#0a0a0a] px-4 py-3">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                    Status
-                                  </p>
-                                  <p className="mt-2 text-sm font-medium uppercase text-zinc-100">
-                                    {portfolioData.account.status || "active"}
-                                  </p>
-                                </div>
-                                <div className="bg-[#0a0a0a] px-4 py-3">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                    Currency
-                                  </p>
-                                  <p className="mt-2 text-sm font-medium text-zinc-100">
-                                    {portfolioData.account.currency || "USD"}
-                                  </p>
-                                </div>
-                                <div className="bg-[#0a0a0a] px-4 py-3">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                    Last Sync
-                                  </p>
-                                  <p className="mt-2 text-sm font-medium text-zinc-100">
-                                    {new Date(
-                                      portfolioData.fetched_at,
-                                    ).toLocaleString("en-US")}
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          </section>
-
-                          <PortfolioCard data={portfolioData} />
+                      <p className="mt-3 text-xs text-zinc-500">
+                        Portolio Connect show's Shreyansh Saurabhs's Alpaca
+                        Account
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                        <div>
+                          <h1 className="text-[22px] font-semibold text-zinc-100">
+                            Portfolio
+                          </h1>
+                          <p className="mt-1 text-sm text-zinc-500">
+                            Live Alpaca account data from your configured API
+                            credentials.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                            {portfolioData
+                              ? formatRelativeUpdate(
+                                  new Date(portfolioData.fetched_at).getTime(),
+                                )
+                              : "Waiting for account data"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void fetchPortfolioRouteData();
+                            }}
+                            disabled={portfolioRouteLoading}
+                            className="inline-flex items-center gap-2 border border-white/[0.08] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-300 transition-colors hover:border-white/[0.12] hover:text-white disabled:cursor-not-allowed disabled:text-zinc-600"
+                          >
+                            <RefreshCw
+                              className={`h-3.5 w-3.5 ${
+                                portfolioRouteLoading ? "animate-spin" : ""
+                              }`}
+                            />
+                            Refresh
+                          </button>
                         </div>
                       </div>
 
-                      <div className="space-y-4">
-                        <PortfolioOrdersTable
-                          title="Pending Orders"
-                          orders={portfolioData.orders.pending}
-                          emptyLabel="No pending orders."
-                        />
-                        <PortfolioOrdersTable
-                          title="Partially Filled Orders"
-                          orders={portfolioData.orders.partially_filled}
-                          emptyLabel="No partially filled orders."
-                        />
-                        <PortfolioOrdersTable
-                          title="Recent Filled Orders"
-                          orders={portfolioData.orders.filled}
-                          emptyLabel="No recent filled orders."
-                        />
-                      </div>
+                      {portfolioRouteError ? (
+                        <div className="border border-red-500/20 bg-red-500/5 px-4 py-4 text-sm text-red-300">
+                          {portfolioRouteError}
+                        </div>
+                      ) : portfolioRouteLoading && !portfolioData ? (
+                        <div className="flex items-center gap-3 border border-white/[0.07] bg-[#0a0a0a] px-4 py-8 text-sm text-zinc-500">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          Loading Alpaca account data…
+                        </div>
+                      ) : portfolioData ? (
+                        <>
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            <PortfolioStatTile
+                              label="Equity"
+                              value={fmtBig(portfolioData.summary.equity)}
+                              detail={`Prev close ${fmtBig(
+                                portfolioData.summary.last_equity,
+                              )}`}
+                            />
+                            <PortfolioStatTile
+                              label="Cash"
+                              value={fmtBig(portfolioData.summary.cash)}
+                              detail={`Buying power ${fmtBig(
+                                portfolioData.summary.buying_power,
+                              )}`}
+                            />
+                            <PortfolioStatTile
+                              label="Day P/L"
+                              value={`${
+                                portfolioData.summary.day_pnl >= 0 ? "+" : ""
+                              }${fmtBig(portfolioData.summary.day_pnl)}`}
+                              tone={
+                                portfolioData.summary.day_pnl >= 0
+                                  ? "positive"
+                                  : "negative"
+                              }
+                              detail={`${
+                                portfolioData.summary.day_pnl_pct >= 0
+                                  ? "+"
+                                  : ""
+                              }${portfolioData.summary.day_pnl_pct.toFixed(2)}%`}
+                            />
+                            <PortfolioStatTile
+                              label="Unrealized P/L"
+                              value={`${
+                                portfolioData.summary.unrealized_pnl_total >= 0
+                                  ? "+"
+                                  : ""
+                              }${fmtBig(portfolioData.summary.unrealized_pnl_total)}`}
+                              tone={
+                                portfolioData.summary.unrealized_pnl_total >= 0
+                                  ? "positive"
+                                  : "negative"
+                              }
+                              detail={`${
+                                portfolioData.summary.unrealized_pnl_pct >= 0
+                                  ? "+"
+                                  : ""
+                              }${portfolioData.summary.unrealized_pnl_pct.toFixed(
+                                2,
+                              )}%`}
+                            />
+                            <PortfolioStatTile
+                              label="Open Positions"
+                              value={String(
+                                portfolioData.summary.positions_count,
+                              )}
+                              detail={`Pending orders ${portfolioData.summary.pending_orders_count}`}
+                            />
+                            <PortfolioStatTile
+                              label="Filled Orders"
+                              value={String(
+                                portfolioData.summary.filled_orders_count,
+                              )}
+                              detail={`Partially filled ${portfolioData.summary.partially_filled_orders_count}`}
+                            />
+                          </div>
+
+                          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.85fr)]">
+                            <section className="space-y-2">
+                              <h2 className="text-sm font-medium text-zinc-200">
+                                Open Positions
+                              </h2>
+                              <PortfolioPositionsTable
+                                positions={portfolioData.positions}
+                              />
+                            </section>
+
+                            <div className="space-y-4">
+                              <section className="space-y-2">
+                                <h2 className="text-sm font-medium text-zinc-200">
+                                  Account Details
+                                </h2>
+                                <div
+                                  className={`overflow-hidden ${CARD_SHELL_CLASS}`}
+                                >
+                                  <div className="grid gap-px bg-white/[0.05] md:grid-cols-2">
+                                    <div className="bg-[#0a0a0a] px-4 py-3">
+                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                        Account
+                                      </p>
+                                      <p className="mt-2 text-sm font-medium text-zinc-100">
+                                        {portfolioData.account.account_number
+                                          ? `••••${String(
+                                              portfolioData.account
+                                                .account_number,
+                                            ).slice(-4)}`
+                                          : "--"}
+                                      </p>
+                                    </div>
+                                    <div className="bg-[#0a0a0a] px-4 py-3">
+                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                        Status
+                                      </p>
+                                      <p className="mt-2 text-sm font-medium uppercase text-zinc-100">
+                                        {portfolioData.account.status ||
+                                          "active"}
+                                      </p>
+                                    </div>
+                                    <div className="bg-[#0a0a0a] px-4 py-3">
+                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                        Currency
+                                      </p>
+                                      <p className="mt-2 text-sm font-medium text-zinc-100">
+                                        {portfolioData.account.currency ||
+                                          "USD"}
+                                      </p>
+                                    </div>
+                                    <div className="bg-[#0a0a0a] px-4 py-3">
+                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                        Last Sync
+                                      </p>
+                                      <p className="mt-2 text-sm font-medium text-zinc-100">
+                                        {new Date(
+                                          portfolioData.fetched_at,
+                                        ).toLocaleString("en-US")}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              </section>
+
+                              <PortfolioCard data={portfolioData} />
+                            </div>
+                          </div>
+
+                          <div className="space-y-4">
+                            <PortfolioOrdersTable
+                              title="Pending Orders"
+                              orders={portfolioData.orders.pending}
+                              emptyLabel="No pending orders."
+                            />
+                            <PortfolioOrdersTable
+                              title="Partially Filled Orders"
+                              orders={portfolioData.orders.partially_filled}
+                              emptyLabel="No partially filled orders."
+                            />
+                            <PortfolioOrdersTable
+                              title="Recent Filled Orders"
+                              orders={portfolioData.orders.filled}
+                              emptyLabel="No recent filled orders."
+                            />
+                          </div>
+                        </>
+                      ) : null}
                     </>
-                  ) : null}
+                  )}
                 </section>
               </div>
             ) : pathname === "/trending" ? (
@@ -4659,9 +4896,11 @@ export default function CryptoDashboard() {
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span>ETH Dom.</span>
+                        <span>SOL Dom.</span>
                         <span className="text-zinc-200 font-medium">
-                          {globalData.market_cap_percentage.eth.toFixed(1)}%
+                          {solDominancePct !== null
+                            ? `${solDominancePct.toFixed(1)}%`
+                            : "--"}
                         </span>
                       </div>
                     </div>
@@ -5592,6 +5831,149 @@ export default function CryptoDashboard() {
         </div>
       </div>
 
+      {watchlistModalOpen && (
+        <div
+          className="fixed inset-0 z-[180] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+          onClick={() => setWatchlistModalOpen(false)}
+        >
+          <div
+            className="relative w-full max-w-2xl overflow-hidden rounded-[22px] border border-white/[0.1] bg-[#0a0a0a] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
+              <div>
+                <h2 className="text-[16px] font-semibold text-zinc-100">
+                  Manage Watchlist Assets
+                </h2>
+                <p className="mt-1 text-[13px] text-zinc-500">
+                  Choose which assets appear in My Watchlist and Watchlist
+                  Movers.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWatchlistModalOpen(false)}
+                className="text-zinc-600 transition-colors hover:text-zinc-300"
+                aria-label="Close watchlist modal"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-5 px-5 py-5">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-[13px] font-medium text-zinc-300">
+                    Selected Assets
+                  </h3>
+                  <span className="text-[12px] text-zinc-500">
+                    {watchlistDraftIds.length} selected
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {watchlistDraftCoins.map((coin) => (
+                    <button
+                      key={`selected-${coin.id}`}
+                      type="button"
+                      onClick={() => removeWatchlistAsset(coin.id)}
+                      className="inline-flex items-center gap-2 rounded-full border border-white/[0.1] bg-white/[0.04] px-3 py-2 text-sm text-zinc-200 transition-colors hover:border-white/[0.14] hover:bg-white/[0.07]"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={coin.image}
+                        alt={coin.name}
+                        className="h-5 w-5 rounded-full object-cover"
+                      />
+                      <span>{coin.name}</span>
+                      <X className="h-3.5 w-3.5 text-zinc-500" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h3 className="text-[13px] font-medium text-zinc-300">
+                  Add Assets
+                </h3>
+                <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#0d0d10] px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] transition-colors hover:border-white/[0.12] focus-within:border-white/[0.18]">
+                  <Search className="h-4 w-4 shrink-0 text-zinc-500" />
+                  <input
+                    type="text"
+                    value={watchlistAssetSearch}
+                    onChange={(e) => setWatchlistAssetSearch(e.target.value)}
+                    placeholder="Search assets by name or symbol..."
+                    className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 outline-none"
+                  />
+                  {watchlistAssetSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setWatchlistAssetSearch("")}
+                      className="text-zinc-600 transition-colors hover:text-zinc-300"
+                      aria-label="Clear watchlist asset search"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="max-h-[260px] overflow-y-auto pr-1">
+                  <div className="flex flex-wrap gap-2">
+                    {watchlistFilteredChoices.length === 0 ? (
+                      <p className="text-sm text-zinc-500">
+                        No matching assets available to add.
+                      </p>
+                    ) : (
+                      watchlistFilteredChoices.map((coin) => (
+                        <button
+                          key={`available-${coin.id}`}
+                          type="button"
+                          onClick={() => addWatchlistAsset(coin.id)}
+                          className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-[#0b0b0d] px-3 py-2 text-sm text-zinc-400 transition-colors hover:border-white/[0.12] hover:text-zinc-200"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={coin.image}
+                            alt={coin.name}
+                            className="h-5 w-5 rounded-full object-cover"
+                          />
+                          <span>{coin.name}</span>
+                          <span className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">
+                            {coin.symbol}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-white/[0.07] px-5 py-4">
+              <p className="text-[12px] text-zinc-500">
+                Select at least one asset to save your watchlist.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setWatchlistModalOpen(false)}
+                  className="rounded-full border border-white/[0.08] px-4 py-2 text-sm text-zinc-400 transition-colors hover:border-white/[0.12] hover:text-zinc-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveWatchlistAssets}
+                  disabled={watchlistDraftIds.length === 0}
+                  className="rounded-full border border-white/[0.16] bg-white/[0.1] px-4 py-2 text-sm font-medium text-white transition-colors hover:border-white/[0.22] hover:bg-white/[0.14] disabled:cursor-not-allowed disabled:border-white/[0.06] disabled:bg-white/[0.03] disabled:text-zinc-600"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Trading Dashboard Modal ── */}
       <TradingDashboardModal
         open={showTradingModal}
@@ -5607,7 +5989,7 @@ export default function CryptoDashboard() {
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Ask about crypto, stocks, ETFs, prices, trends..."
+                placeholder="Ask about crypto, stocks, prices, trends..."
                 className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 outline-none"
                 disabled={streaming}
               />

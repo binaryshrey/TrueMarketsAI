@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
-  Search,
+  Plus,
   Send,
   X,
   RefreshCw,
@@ -197,6 +197,15 @@ interface ChatMessage {
   newsLoading?: boolean;
 }
 
+interface ChatAttachmentPayload {
+  name: string;
+  mimeType: string;
+  kind: "image" | "text" | "binary";
+  size: number;
+  textContent?: string;
+  imageDataUrl?: string;
+}
+
 type AlpacaOrderSide = "buy" | "sell";
 type AlpacaOrderType = "market" | "limit";
 type AlpacaTimeInForce = "gtc" | "ioc";
@@ -248,10 +257,49 @@ function pct(n: number): string {
 }
 
 const DEFAULT_POSITION_NOTIONAL = 100;
+const MAX_CHAT_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_TEXT_CHARS = 12000;
+
+const TEXT_LIKE_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "csv",
+  "json",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "py",
+  "html",
+  "css",
+  "xml",
+  "yaml",
+  "yml",
+]);
+
+function getFileExtension(filename: string): string {
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex < 0) return "";
+  return filename.slice(dotIndex + 1).toLowerCase();
+}
+
+function isTextLikeFile(file: File): boolean {
+  if (file.type.startsWith("text/")) return true;
+  return TEXT_LIKE_EXTENSIONS.has(getFileExtension(file.name));
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
 
 function formatQtyFromNotional(
   price: number,
-  notional = DEFAULT_POSITION_NOTIONAL
+  notional = DEFAULT_POSITION_NOTIONAL,
 ) {
   if (!Number.isFinite(price) || price <= 0) return "1";
   const qty = notional / price;
@@ -265,7 +313,7 @@ function makeMessageId(): string {
 }
 
 function buildPortfolioContext(
-  portfolio?: PortfolioData
+  portfolio?: PortfolioData,
 ): PortfolioContextPayload | undefined {
   if (!portfolio) return undefined;
   return {
@@ -312,15 +360,13 @@ function buildPortfolioContext(
 }
 
 function buildNewsContext(
-  messages: ChatMessage[]
+  messages: ChatMessage[],
 ): NewsContextPayload | undefined {
   const latestNewsMessage = [...messages]
     .reverse()
     .find(
       (m) =>
-        m.role === "assistant" &&
-        Array.isArray(m.news) &&
-        m.news.length > 0
+        m.role === "assistant" && Array.isArray(m.news) && m.news.length > 0,
     );
   if (!latestNewsMessage?.news?.length) return undefined;
   return {
@@ -436,7 +482,7 @@ function MarkdownMessage({
           {listItems.map((item, i) => (
             <li key={i}>{renderInline(item)}</li>
           ))}
-        </ul>
+        </ul>,
       );
       listItems = [];
     }
@@ -449,7 +495,7 @@ function MarkdownMessage({
           {orderedItems.map((item, i) => (
             <li key={i}>{renderInline(item)}</li>
           ))}
-        </ol>
+        </ol>,
       );
       orderedItems = [];
     }
@@ -471,21 +517,21 @@ function MarkdownMessage({
           className="text-[13px] font-semibold text-zinc-200 mt-2"
         >
           {renderInline(line.slice(4))}
-        </p>
+        </p>,
       );
     } else if (/^## /.test(line)) {
       flushList();
       blocks.push(
         <p key={blocks.length} className="text-sm font-bold text-white mt-2">
           {renderInline(line.slice(3))}
-        </p>
+        </p>,
       );
     } else if (/^# /.test(line)) {
       flushList();
       blocks.push(
         <p key={blocks.length} className="text-sm font-bold text-white mt-2">
           {renderInline(line.slice(2))}
-        </p>
+        </p>,
       );
     } else if (/^> /.test(line)) {
       flushList();
@@ -495,7 +541,7 @@ function MarkdownMessage({
           className="border-l-2 border-zinc-600 pl-3 text-zinc-400 italic text-sm"
         >
           {renderInline(line.slice(2))}
-        </blockquote>
+        </blockquote>,
       );
     } else if (/^[-*] /.test(line)) {
       if (orderedItems.length) flushList();
@@ -508,9 +554,12 @@ function MarkdownMessage({
     } else {
       flushList();
       blocks.push(
-        <p key={blocks.length} className="text-sm text-zinc-300 leading-relaxed">
+        <p
+          key={blocks.length}
+          className="text-sm text-zinc-300 leading-relaxed"
+        >
           {renderInline(line)}
-        </p>
+        </p>,
       );
     }
   }
@@ -697,14 +746,15 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
   const assetType = meta.assetType;
   const [range, setRange] = useState(meta.range);
   const [localDetail, setLocalDetail] = useState<CoinDetail | undefined>(
-    undefined
+    undefined,
   );
   const detail = localDetail ?? meta.data;
   const [loadingRange, setLoadingRange] = useState(false);
   const [showTradeWidget, setShowTradeWidget] = useState(false);
   const [checkingConfig, setCheckingConfig] = useState(false);
-  const [alpacaConfig, setAlpacaConfig] =
-    useState<AlpacaConfigResponse | null>(null);
+  const [alpacaConfig, setAlpacaConfig] = useState<AlpacaConfigResponse | null>(
+    null,
+  );
   const [orderSide, setOrderSide] = useState<AlpacaOrderSide>("buy");
   const [orderType, setOrderType] = useState<AlpacaOrderType>("market");
   const [timeInForce, setTimeInForce] = useState<AlpacaTimeInForce>("gtc");
@@ -721,7 +771,7 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [tradeError, setTradeError] = useState<string | null>(null);
   const [placedOrder, setPlacedOrder] = useState<AlpacaPlacedOrder | null>(
-    null
+    null,
   );
   const detailSymbol = detail?.symbol;
   const detailPrice = detail?.current_price;
@@ -731,11 +781,11 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
     setTradeSymbol(
       assetType === "crypto"
         ? `${detailSymbol.toUpperCase()}USD`
-        : detailSymbol.toUpperCase()
+        : detailSymbol.toUpperCase(),
     );
     setQuantity(formatQtyFromNotional(detailPrice));
     setLimitPrice(
-      detailPrice >= 1 ? detailPrice.toFixed(2) : detailPrice.toFixed(6)
+      detailPrice >= 1 ? detailPrice.toFixed(2) : detailPrice.toFixed(6),
     );
     setOrderSide("buy");
   }, [assetType, showTradeWidget, detailPrice, detailSymbol]);
@@ -756,14 +806,15 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
     }
     setLoadingRange(true);
     try {
-      if (assetType === "crypto" && !meta.coinId) throw new Error("coinId missing");
+      if (assetType === "crypto" && !meta.coinId)
+        throw new Error("coinId missing");
       const res =
         assetType === "crypto"
           ? await fetch(`/api/coin-detail?coinId=${meta.coinId}&range=${r}`)
           : await fetch(
               `/api/equity-detail?symbol=${encodeURIComponent(
-                detail?.symbol || meta.symbol
-              )}&range=${r}`
+                detail?.symbol || meta.symbol,
+              )}&range=${r}`,
             );
       if (!res.ok) throw new Error(`${res.status}`);
       const d: CoinDetail = await res.json();
@@ -997,7 +1048,7 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
             assetType === "crypto"
               ? "https://www.coingecko.com"
               : `https://finance.yahoo.com/quote/${encodeURIComponent(
-                  detail.symbol
+                  detail.symbol,
                 )}`
           }
           target="_blank"
@@ -1157,7 +1208,9 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
                   <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-[10px] text-emerald-300 space-y-0.5">
                     <p>
                       Order submitted:{" "}
-                      <span className="font-semibold">{placedOrder.symbol}</span>
+                      <span className="font-semibold">
+                        {placedOrder.symbol}
+                      </span>
                     </p>
                     <p>
                       {placedOrder.side.toUpperCase()} {placedOrder.qty} ·{" "}
@@ -1206,8 +1259,7 @@ function PortfolioCard({ data }: { data: PortfolioData }) {
             </p>
           </div>
           <span className="text-[10px] text-zinc-500">
-            {data.account.status || "active"} ·{" "}
-            {data.account.currency || "USD"}
+            {data.account.status || "active"} · {data.account.currency || "USD"}
           </span>
         </div>
       </div>
@@ -1268,7 +1320,8 @@ function PortfolioCard({ data }: { data: PortfolioData }) {
                       {p.symbol}
                     </p>
                     <p className="text-[10px] text-zinc-500">
-                      Qty {p.qty} · Avg ${Number(p.avg_entry_price || 0).toFixed(2)}
+                      Qty {p.qty} · Avg $
+                      {Number(p.avg_entry_price || 0).toFixed(2)}
                     </p>
                   </div>
                   <div className="text-right">
@@ -1325,23 +1378,47 @@ export default function ChatPageContent() {
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
+  const [deepResearchMode, setDeepResearchMode] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    ChatAttachmentPayload[]
+  >([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerMenuRef = useRef<HTMLDivElement>(null);
   const sentInitialRef = useRef(false);
   const prevMessageCountRef = useRef(0);
+
+  useEffect(() => {
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (!composerMenuRef.current) return;
+      if (
+        event.target instanceof Node &&
+        !composerMenuRef.current.contains(event.target)
+      ) {
+        setComposerMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleDocumentClick);
+    return () => document.removeEventListener("mousedown", handleDocumentClick);
+  }, []);
 
   // Fetch sentiment
   useEffect(() => {
     fetch("/api/sentiment")
       .then((r) => r.json())
-      .then((data) => { if (data?.tone) setSentiment(data); })
+      .then((data) => {
+        if (data?.tone) setSentiment(data);
+      })
       .catch(() => {});
   }, []);
 
   // Fetch market data for sidebar
   useEffect(() => {
     fetch(
-      "/api/crypto?endpoint=coins/markets&vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=true&price_change_percentage=24h"
+      "/api/crypto?endpoint=coins/markets&vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=true&price_change_percentage=24h",
     )
       .then((r) => r.json())
       .then((data) => {
@@ -1360,10 +1437,10 @@ export default function ChatPageContent() {
   const updateMessage = useCallback(
     (messageId: string, updater: (prev: ChatMessage) => ChatMessage) => {
       setMessages((prev) =>
-        prev.map((msg) => (msg.id === messageId ? updater(msg) : msg))
+        prev.map((msg) => (msg.id === messageId ? updater(msg) : msg)),
       );
     },
-    []
+    [],
   );
 
   const enrichAssistantMessage = useCallback(
@@ -1381,9 +1458,7 @@ export default function ChatPageContent() {
       const newsQuery = coinName || coinSymbol || userText;
       updateMessage(messageId, (prev) => ({ ...prev, newsLoading: true }));
       try {
-        const res = await fetch(
-          `/api/news?q=${encodeURIComponent(newsQuery)}`
-        );
+        const res = await fetch(`/api/news?q=${encodeURIComponent(newsQuery)}`);
         const payload = (await res.json()) as {
           items?: NewsItem[];
           followUps?: string[];
@@ -1398,13 +1473,22 @@ export default function ChatPageContent() {
         updateMessage(messageId, (prev) => ({ ...prev, newsLoading: false }));
       }
     },
-    [updateMessage]
+    [updateMessage],
   );
 
   const sendPrompt = useCallback(
     async (rawPrompt: string) => {
       const text = rawPrompt.trim();
-      if (!text || streaming) return;
+      if (streaming) return;
+
+      const attachmentsForRequest = pendingAttachments;
+      const deepResearchForRequest = deepResearchMode;
+      const hasAttachments = attachmentsForRequest.length > 0;
+      if (!text && !hasAttachments) return;
+
+      const effectiveText =
+        text || "Please analyze the uploaded files and summarize key insights.";
+
       const latestPortfolio = [...messages]
         .reverse()
         .find((m) => m.portfolio)?.portfolio;
@@ -1412,6 +1496,8 @@ export default function ChatPageContent() {
       const newsContext = buildNewsContext(messages);
 
       setQuery("");
+      setPendingAttachments([]);
+      setComposerMenuOpen(false);
       setStreaming(true);
 
       const userId = makeMessageId();
@@ -1419,7 +1505,18 @@ export default function ChatPageContent() {
 
       setMessages((prev) => [
         ...prev,
-        { id: userId, role: "user", content: text },
+        {
+          id: userId,
+          role: "user",
+          content:
+            effectiveText +
+            (deepResearchForRequest ? "\n\n[Deep Research enabled]" : "") +
+            (hasAttachments
+              ? `\n\n[Attached: ${attachmentsForRequest
+                  .map((attachment) => attachment.name)
+                  .join(", ")}]`
+              : ""),
+        },
         { id: assistantId, role: "assistant", content: "" },
       ]);
 
@@ -1427,7 +1524,13 @@ export default function ChatPageContent() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, portfolioContext, newsContext }),
+          body: JSON.stringify({
+            message: effectiveText,
+            portfolioContext,
+            newsContext,
+            deepResearch: deepResearchForRequest,
+            attachments: attachmentsForRequest,
+          }),
         });
         if (!res.body) throw new Error("No body");
 
@@ -1485,7 +1588,7 @@ export default function ChatPageContent() {
         if (cardMode === "asset") {
           try {
             const match = accumulated.match(
-              /__(?:ASSET|COIN)_CARD__\s*(\{[^}]+\})\s*([\s\S]*)/
+              /__(?:ASSET|COIN)_CARD__\s*(\{[^}]+\})\s*([\s\S]*)/,
             );
             if (!match) throw new Error("No JSON found in asset card response");
             const parsed = JSON.parse(match[1]) as {
@@ -1510,7 +1613,7 @@ export default function ChatPageContent() {
                 (c) =>
                   c.id === coinId ||
                   c.symbol.toUpperCase() === symbol ||
-                  c.name.toLowerCase() === name.toLowerCase()
+                  c.name.toLowerCase() === name.toLowerCase(),
               );
               if (cached) {
                 const sparkline = cached.sparkline_in_7d?.price ?? [];
@@ -1539,8 +1642,8 @@ export default function ChatPageContent() {
                     (p, i) =>
                       [now - (sparkline.length - 1 - i) * step, p] as [
                         number,
-                        number
-                      ]
+                        number,
+                      ],
                   ),
                   asset_type: "crypto",
                 };
@@ -1548,7 +1651,7 @@ export default function ChatPageContent() {
               } else {
                 const resolvedCoinId = coinId || symbol.toLowerCase();
                 const detailRes = await fetch(
-                  `/api/coin-detail?coinId=${encodeURIComponent(resolvedCoinId)}`
+                  `/api/coin-detail?coinId=${encodeURIComponent(resolvedCoinId)}`,
                 );
                 if (!detailRes.ok)
                   throw new Error("Failed to load crypto detail");
@@ -1557,7 +1660,7 @@ export default function ChatPageContent() {
               }
             } else {
               const detailRes = await fetch(
-                `/api/equity-detail?symbol=${encodeURIComponent(symbol)}`
+                `/api/equity-detail?symbol=${encodeURIComponent(symbol)}`,
               );
               detail = (await detailRes.json()) as CoinDetail;
               if (!detailRes.ok)
@@ -1581,7 +1684,7 @@ export default function ChatPageContent() {
             }));
             void enrichAssistantMessage({
               messageId: assistantId,
-              userText: text,
+              userText: effectiveText,
               coinName: name,
               coinSymbol: symbol,
             });
@@ -1595,13 +1698,12 @@ export default function ChatPageContent() {
         } else if (cardMode === "portfolio") {
           try {
             const match = accumulated.match(
-              /__PORTFOLIO_CARD__\s*(\{[^]*\})?\s*([\s\S]*)/
+              /__PORTFOLIO_CARD__\s*(\{[^]*\})?\s*([\s\S]*)/,
             );
             const commentary = match?.[2]?.trim() || "";
             const portfolioRes = await fetch("/api/alpaca/portfolio");
             if (!portfolioRes.ok) throw new Error("Failed to load portfolio.");
-            const portfolioData =
-              (await portfolioRes.json()) as PortfolioData;
+            const portfolioData = (await portfolioRes.json()) as PortfolioData;
             updateMessage(assistantId, (prev) => ({
               ...prev,
               role: "assistant",
@@ -1612,7 +1714,7 @@ export default function ChatPageContent() {
             const firstSymbol = portfolioData.positions?.[0]?.symbol;
             void enrichAssistantMessage({
               messageId: assistantId,
-              userText: text,
+              userText: effectiveText,
               coinSymbol: firstSymbol,
             });
           } catch {
@@ -1625,7 +1727,10 @@ export default function ChatPageContent() {
             }));
           }
         } else {
-          void enrichAssistantMessage({ messageId: assistantId, userText: text });
+          void enrichAssistantMessage({
+            messageId: assistantId,
+            userText: effectiveText,
+          });
         }
       } catch {
         updateMessage(assistantId, (prev) => ({
@@ -1637,8 +1742,81 @@ export default function ChatPageContent() {
         setStreaming(false);
       }
     },
-    [coins, enrichAssistantMessage, messages, streaming, updateMessage]
+    [
+      coins,
+      deepResearchMode,
+      enrichAssistantMessage,
+      messages,
+      pendingAttachments,
+      streaming,
+      updateMessage,
+    ],
   );
+
+  const removePendingAttachment = useCallback((name: string) => {
+    setPendingAttachments((prev) =>
+      prev.filter((attachment) => attachment.name !== name),
+    );
+  }, []);
+
+  const handleFilesSelected = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const selected = Array.from(files).slice(0, MAX_CHAT_ATTACHMENTS);
+    const parsedAttachments = await Promise.all(
+      selected.map(async (file): Promise<ChatAttachmentPayload> => {
+        if (file.type.startsWith("image/")) {
+          const imageDataUrl = await readFileAsDataUrl(file);
+          return {
+            name: file.name,
+            mimeType: file.type || "image/*",
+            kind: "image",
+            size: file.size,
+            imageDataUrl,
+          };
+        }
+
+        if (isTextLikeFile(file)) {
+          const textContent = (await file.text()).slice(
+            0,
+            MAX_ATTACHMENT_TEXT_CHARS,
+          );
+          return {
+            name: file.name,
+            mimeType: file.type || "text/plain",
+            kind: "text",
+            size: file.size,
+            textContent,
+          };
+        }
+
+        return {
+          name: file.name,
+          mimeType: file.type || "application/octet-stream",
+          kind: "binary",
+          size: file.size,
+        };
+      }),
+    );
+
+    setPendingAttachments((prev) => {
+      const existingNames = new Set(prev.map((item) => item.name));
+      const deduped = parsedAttachments.filter(
+        (item) => !existingNames.has(item.name),
+      );
+      return [...prev, ...deduped].slice(0, MAX_CHAT_ATTACHMENTS);
+    });
+  }, []);
+
+  const openUploadPicker = useCallback(() => {
+    setComposerMenuOpen(false);
+    fileInputRef.current?.click();
+  }, []);
+
+  const enableDeepResearch = useCallback(() => {
+    setDeepResearchMode(true);
+    setComposerMenuOpen(false);
+  }, []);
 
   // Auto-send the initial query from URL params
   useEffect(() => {
@@ -1651,7 +1829,9 @@ export default function ChatPageContent() {
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (query.trim()) await sendPrompt(query);
+    if (query.trim() || pendingAttachments.length > 0) {
+      await sendPrompt(query);
+    }
   };
 
   return (
@@ -1667,7 +1847,7 @@ export default function ChatPageContent() {
               <ArrowLeft className="w-3.5 h-3.5" />
             </Link>
             <span className="text-xl font-semibold tracking-tight">
-              False<span className="text-zinc-400">Markets</span>
+              True<span className="text-zinc-400">Markets</span>
             </span>
           </div>
           <div className="flex items-center gap-4">
@@ -1679,23 +1859,25 @@ export default function ChatPageContent() {
                 className="flex items-center gap-2.5 hover:opacity-80 transition-opacity cursor-pointer"
               >
                 <div className="flex items-end gap-[3px] h-7">
-                  {[7, 12, 10, 19, 15, 22, 14, 18, 11, 16, 8, 14].map((h, i) => (
-                    <span
-                      key={i}
-                      className="w-[3px] rounded-full"
-                      style={{
-                        height: `${h}px`,
-                        background:
-                          sentiment.tone === "bearish"
-                            ? "#fb7185"
-                            : sentiment.tone === "bullish"
-                            ? "#34d399"
-                            : "#fbbf24",
-                        opacity: 0.55 + (i % 3) * 0.15,
-                        animation: `eqBar ${0.8 + (i % 4) * 0.15}s ease-in-out ${i * 0.07}s infinite alternate`,
-                      }}
-                    />
-                  ))}
+                  {[7, 12, 10, 19, 15, 22, 14, 18, 11, 16, 8, 14].map(
+                    (h, i) => (
+                      <span
+                        key={i}
+                        className="w-[3px] rounded-full"
+                        style={{
+                          height: `${h}px`,
+                          background:
+                            sentiment.tone === "bearish"
+                              ? "#fb7185"
+                              : sentiment.tone === "bullish"
+                                ? "#34d399"
+                                : "#fbbf24",
+                          opacity: 0.55 + (i % 3) * 0.15,
+                          animation: `eqBar ${0.8 + (i % 4) * 0.15}s ease-in-out ${i * 0.07}s infinite alternate`,
+                        }}
+                      />
+                    ),
+                  )}
                 </div>
                 <div className="flex flex-col leading-none gap-1">
                   <span
@@ -1705,8 +1887,8 @@ export default function ChatPageContent() {
                         sentiment.tone === "bearish"
                           ? "#fb7185"
                           : sentiment.tone === "bullish"
-                          ? "#34d399"
-                          : "#fbbf24",
+                            ? "#34d399"
+                            : "#fbbf24",
                     }}
                   >
                     {sentiment.label}
@@ -1717,7 +1899,8 @@ export default function ChatPageContent() {
                       month: "short",
                       day: "numeric",
                       year: "numeric",
-                    })}{", "}EST
+                    })}
+                    {", "}EST
                   </span>
                 </div>
               </a>
@@ -1793,12 +1976,13 @@ export default function ChatPageContent() {
                             </span>
                           </div>
                         )}
-                        {msg.content && msg.content !== "__PORTFOLIO_CARD__" && (
-                          <MarkdownMessage
-                            text={msg.content}
-                            streaming={false}
-                          />
-                        )}
+                        {msg.content &&
+                          msg.content !== "__PORTFOLIO_CARD__" && (
+                            <MarkdownMessage
+                              text={msg.content}
+                              streaming={false}
+                            />
+                          )}
                         <MessageContext
                           message={msg}
                           disabled={streaming}
@@ -1809,9 +1993,7 @@ export default function ChatPageContent() {
                       <div>
                         <MarkdownMessage
                           text={msg.content}
-                          streaming={
-                            streaming && idx === messages.length - 1
-                          }
+                          streaming={streaming && idx === messages.length - 1}
                         />
                         <MessageContext
                           message={msg}
@@ -1848,7 +2030,13 @@ export default function ChatPageContent() {
                   return (
                     <div
                       key={coin.id}
-                      onClick={() => window.open(`https://www.coingecko.com/en/coins/${coin.id}`, "_blank", "noopener,noreferrer")}
+                      onClick={() =>
+                        window.open(
+                          `https://www.coingecko.com/en/coins/${coin.id}`,
+                          "_blank",
+                          "noopener,noreferrer",
+                        )
+                      }
                       className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl hover:border-white/[0.14] hover:bg-[#111] transition-all overflow-hidden cursor-pointer"
                     >
                       <div className="px-3.5 pt-3 pb-1.5">
@@ -1883,7 +2071,7 @@ export default function ChatPageContent() {
                                 <ArrowDownRight className="w-3 h-3" />
                               )}
                               {Math.abs(
-                                coin.price_change_percentage_24h
+                                coin.price_change_percentage_24h,
                               ).toFixed(2)}
                               %
                             </span>
@@ -1916,8 +2104,79 @@ export default function ChatPageContent() {
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-linear-to-t from-[#000000] via-[#000000]/95 to-transparent pt-6 pb-4 px-5">
         <div className="max-w-7xl mx-auto">
           <form onSubmit={handleSearch}>
-            <div className="flex items-center gap-3 bg-[#0a0a0a] border border-white/12 rounded-2xl px-4 py-3 focus-within:border-white/26 hover:border-white/18 transition-colors shadow-[0_0_40px_rgba(0,0,0,0.8)]">
-              <Search className="w-4 h-4 text-zinc-500 shrink-0" />
+            <div
+              ref={composerMenuRef}
+              className="relative flex items-center gap-3 bg-[#0a0a0a] border border-white/12 rounded-2xl px-4 py-3 focus-within:border-white/26 hover:border-white/18 transition-colors shadow-[0_0_40px_rgba(0,0,0,0.8)]"
+            >
+              <button
+                type="button"
+                onClick={() => setComposerMenuOpen((prev) => !prev)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.12] text-zinc-400 transition-colors hover:border-white/[0.2] hover:text-zinc-200"
+                aria-label="Open chat actions"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+
+              {composerMenuOpen && (
+                <div className="absolute bottom-12 left-0 z-20 w-64 rounded-2xl border border-white/[0.08] bg-[#0a0a0a] p-1.5 shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
+                  <button
+                    type="button"
+                    onClick={openUploadPicker}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-white/[0.05] hover:text-zinc-100"
+                  >
+                    <span>Upload files or images</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enableDeepResearch}
+                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-white/[0.05] hover:text-zinc-100"
+                  >
+                    <span>Deep research</span>
+                  </button>
+                </div>
+              )}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.html,.css,.xml,.yaml,.yml,.pdf"
+                className="hidden"
+                onChange={(e) => {
+                  void handleFilesSelected(e.target.files);
+                  e.currentTarget.value = "";
+                }}
+              />
+
+              {deepResearchMode && (
+                <button
+                  type="button"
+                  onClick={() => setDeepResearchMode(false)}
+                  className="inline-flex items-center gap-1 rounded-full border border-blue-400/35 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-300 transition-colors hover:bg-blue-500/20"
+                >
+                  Deep Research
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+
+              {pendingAttachments.length > 0 && (
+                <div className="flex max-w-[38%] items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+                  {pendingAttachments.map((attachment) => (
+                    <button
+                      key={attachment.name}
+                      type="button"
+                      onClick={() => removePendingAttachment(attachment.name)}
+                      className="inline-flex items-center gap-1 rounded-full border border-white/[0.14] bg-white/[0.04] px-2 py-1 text-[10px] text-zinc-300"
+                    >
+                      <span className="max-w-[120px] truncate">
+                        {attachment.name}
+                      </span>
+                      <X className="w-3 h-3" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <input
                 ref={inputRef}
                 type="text"
@@ -1938,7 +2197,11 @@ export default function ChatPageContent() {
               )}
               <button
                 type="submit"
-                disabled={!query.trim() || streaming}
+                disabled={
+                  (query.trim().length === 0 &&
+                    pendingAttachments.length === 0) ||
+                  streaming
+                }
                 className="flex items-center gap-1.5 bg-white text-black rounded-xl px-3 py-1.5 text-[11px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-200 transition-colors shrink-0"
               >
                 {streaming ? (
