@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useDeferredValue } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useDeferredValue,
+} from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -26,6 +32,11 @@ import {
   ChevronUp,
   ChevronDown,
   CircleUserRound,
+  Eye,
+  Heart,
+  MessageCircleMore,
+  Repeat2,
+  Hash,
 } from "lucide-react";
 
 // ApexCharts — no SSR
@@ -125,6 +136,25 @@ interface NewsItem {
   link: string;
   source?: string;
   publishedAt?: string;
+}
+
+interface SocialMentionPost {
+  authorName: string;
+  authorHandle: string;
+  authorAvatar: string;
+  followers: number;
+  verified: boolean;
+  text: string;
+  url: string;
+  publishTime: number;
+  views: number;
+  likes: number;
+  replies: number;
+  reposts: number;
+  tokenName: string;
+  tokenLogo: string;
+  platform: string;
+  mediaUrls?: string[];
 }
 
 interface PortfolioPosition {
@@ -290,12 +320,50 @@ function fmtBig(value: number): string {
   return `$${value.toFixed(0)}`;
 }
 
+function fmtCount(value: number): string {
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
+  return `${Math.round(value)}`;
+}
+
 function pct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+function formatRelativeAgeFromUnix(timestamp: number): string {
+  const diffMs = Date.now() - timestamp * 1000;
+  const diffHours = Math.max(1, Math.floor(diffMs / (60 * 60 * 1000)));
+  if (diffHours < 24) return `${diffHours}h`;
+  return `${Math.floor(diffHours / 24)}d`;
+}
+
+type PredictionBrowseFilter =
+  | "all"
+  | "bitcoin"
+  | "ethereum"
+  | "launches"
+  | "deadlines"
+  | "price-targets";
+
+const PREDICTION_BROWSE_FILTERS: Array<{
+  key: PredictionBrowseFilter;
+  label: string;
+}> = [
+  { key: "all", label: "All" },
+  { key: "bitcoin", label: "Bitcoin" },
+  { key: "ethereum", label: "Ethereum" },
+  { key: "launches", label: "Launches" },
+  { key: "deadlines", label: "Deadlines" },
+  { key: "price-targets", label: "Price Targets" },
+];
+
 function fmtVolumeMultiple(volume: number, marketCap: number): string {
-  if (!Number.isFinite(volume) || !Number.isFinite(marketCap) || marketCap <= 0) {
+  if (
+    !Number.isFinite(volume) ||
+    !Number.isFinite(marketCap) ||
+    marketCap <= 0
+  ) {
     return "--";
   }
 
@@ -318,7 +386,10 @@ function formatQtyFromNotional(
 function formatRelativeUpdate(timestamp: number | null): string {
   if (!timestamp) return "Updated just now";
 
-  const diffMinutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000));
+  const diffMinutes = Math.max(
+    0,
+    Math.round((Date.now() - timestamp) / 60_000),
+  );
   if (diffMinutes <= 1) return "Updated 1 minute ago";
   if (diffMinutes < 60) return `Updated ${diffMinutes} minutes ago`;
 
@@ -342,7 +413,8 @@ function buildLinePath(
 
   return points.reduce((path, point, index) => {
     const x =
-      padding + (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
+      padding +
+      (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
     const normalized = (point - min) / range;
     const y = padding + (1 - normalized) * Math.max(innerHeight, 0);
 
@@ -366,7 +438,8 @@ function buildLinePathWithBounds(
 
   return points.reduce((path, point, index) => {
     const x =
-      padding + (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
+      padding +
+      (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
     const normalized = (point - min) / range;
     const y = padding + (1 - normalized) * Math.max(innerHeight, 0);
 
@@ -446,7 +519,8 @@ function buildStepPath(
 
   return points.reduce((path, point, index) => {
     const x =
-      padding + (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
+      padding +
+      (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
     const y = padding + (1 - point) * Math.max(innerHeight, 0);
 
     if (index === 0) {
@@ -486,6 +560,59 @@ function normalizeDiscussionQuestion(question?: string): string {
   return question ?? "";
 }
 
+function matchesPredictionBrowseFilter(
+  market: PredictionMarket,
+  filter: PredictionBrowseFilter,
+): boolean {
+  if (filter === "all") return true;
+
+  const haystack = [
+    normalizeDiscussionQuestion(market.question),
+    ...(market.discussionOptions?.map((option) => option.label) ?? []),
+  ]
+    .join(" ")
+    .toLowerCase();
+  const hasDateOption =
+    market.discussionOptions?.some((option) =>
+      /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\b/i.test(
+        option.label,
+      ),
+    ) ?? false;
+
+  switch (filter) {
+    case "bitcoin":
+      return (
+        /\bbitcoin\b|\bbtc\b/.test(haystack) ||
+        haystack.includes("microstrategy")
+      );
+    case "ethereum":
+      return (
+        /\bethereum\b|\beth\b/.test(haystack) || haystack.includes("megaeth")
+      );
+    case "launches":
+      return (
+        haystack.includes("launch") ||
+        haystack.includes("fdv") ||
+        haystack.includes("token by")
+      );
+    case "deadlines":
+      return (
+        /\bwhen will\b/.test(haystack) ||
+        /\bby\b/.test(haystack) ||
+        hasDateOption
+      );
+    case "price-targets":
+      return (
+        haystack.includes("what price") ||
+        haystack.includes("hit $") ||
+        haystack.includes("all time high") ||
+        /\$\d[\d,]*(?:\.\d+)?/.test(haystack)
+      );
+    default:
+      return true;
+  }
+}
+
 function DiscussionChartCard({ market }: { market: PredictionMarket }) {
   const rankedOutcomes = (market.discussionOptions ?? [])
     .map((option) => ({
@@ -498,15 +625,25 @@ function DiscussionChartCard({ market }: { market: PredictionMarket }) {
     .slice(0, 2);
 
   const fallbackOutcomes = [
-    { label: "Yes", price: 0.62, history: [] as Array<{ t: number; p: number }> },
-    { label: "No", price: 0.38, history: [] as Array<{ t: number; p: number }> },
+    {
+      label: "Yes",
+      price: 0.62,
+      history: [] as Array<{ t: number; p: number }>,
+    },
+    {
+      label: "No",
+      price: 0.38,
+      history: [] as Array<{ t: number; p: number }>,
+    },
   ];
   const topOutcomes =
     rankedOutcomes.length >= 2 ? rankedOutcomes : fallbackOutcomes;
   const primarySeries =
-    topOutcomes[0].history?.map((point) => point.p).filter(Number.isFinite) ?? [];
+    topOutcomes[0].history?.map((point) => point.p).filter(Number.isFinite) ??
+    [];
   const secondarySeries =
-    topOutcomes[1].history?.map((point) => point.p).filter(Number.isFinite) ?? [];
+    topOutcomes[1].history?.map((point) => point.p).filter(Number.isFinite) ??
+    [];
   const fallbackPrimarySeries = [0.62, 0.64, 0.61, 0.66, 0.68, 0.7, 0.73];
   const fallbackSecondarySeries = [0.38, 0.36, 0.39, 0.34, 0.32, 0.3, 0.27];
   const resolvedPrimarySeries =
@@ -683,32 +820,35 @@ function PredictionBrowseCard({ market }: { market: PredictionMarket }) {
                 : "text-zinc-600";
 
           return (
-          <div
-            key={`${market.id}-${option.label}`}
-            className="flex items-center justify-between gap-4"
-          >
-            <span className="min-w-0 truncate text-[14px] text-zinc-400">
-              {formatDiscussionLabel(option.label)}
-            </span>
-            <div className="flex shrink-0 items-center gap-4">
-              <span className="text-[15px] font-semibold tabular-nums text-zinc-100">
-                {Math.round(option.price * 100)}%
+            <div
+              key={`${market.id}-${option.label}`}
+              className="flex items-center justify-between gap-4"
+            >
+              <span className="min-w-0 truncate text-[14px] text-zinc-400">
+                {formatDiscussionLabel(option.label)}
               </span>
-              <span
-                className={`inline-flex min-w-[42px] items-center justify-end gap-0.5 text-[13px] font-medium tabular-nums ${deltaTone}`}
-              >
-                {delta > 0 ? (
-                  <ArrowUpRight className="h-3 w-3" />
-                ) : delta < 0 ? (
-                  <ArrowDownRight className="h-3 w-3" />
-                ) : null}
-                {deltaLabel}
-              </span>
+              <div className="flex shrink-0 items-center gap-4">
+                <span className="text-[15px] font-semibold tabular-nums text-zinc-100">
+                  {Math.round(option.price * 100)}%
+                </span>
+                <span
+                  className={`inline-flex min-w-[42px] items-center justify-end gap-0.5 text-[13px] font-medium tabular-nums ${deltaTone}`}
+                >
+                  {delta > 0 ? (
+                    <ArrowUpRight className="h-3 w-3" />
+                  ) : delta < 0 ? (
+                    <ArrowDownRight className="h-3 w-3" />
+                  ) : null}
+                  {deltaLabel}
+                </span>
+              </div>
             </div>
-          </div>
-        )})}
+          );
+        })}
         {remainingCount > 0 && (
-          <p className="pt-0.5 text-[14px] text-zinc-600">+{remainingCount} more</p>
+          <p className="pt-0.5 text-[14px] text-zinc-600">
+            +{remainingCount} more
+          </p>
         )}
       </div>
     </a>
@@ -736,7 +876,10 @@ function buildFallbackHistory(coin: CoinData): WatchlistHistoryPoint[] {
 
   return sparkline.map(
     (price, index) =>
-      [now - (sparkline.length - 1 - index) * step, price] as WatchlistHistoryPoint,
+      [
+        now - (sparkline.length - 1 - index) * step,
+        price,
+      ] as WatchlistHistoryPoint,
   );
 }
 
@@ -818,7 +961,14 @@ function formatWatchlistHoverLabel(
 }
 
 function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
-  const palette = ["#39c7d9", "#f08c67", "#e6cf57", "#c38ae6", "#ff5a66", "#5fd1a5"];
+  const palette = [
+    "#39c7d9",
+    "#f08c67",
+    "#e6cf57",
+    "#c38ae6",
+    "#ff5a66",
+    "#5fd1a5",
+  ];
   const chartWidth = 1180;
   const chartHeight = 360;
   const chartPadding = 18;
@@ -844,7 +994,7 @@ function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
       return;
     }
 
-    const missingCoins = coins.filter((coin) => !(cachedSeries[coin.id]?.length));
+    const missingCoins = coins.filter((coin) => !cachedSeries[coin.id]?.length);
 
     if (!missingCoins.length) return;
 
@@ -974,7 +1124,9 @@ function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
   const hoverAnchorSeries = percentSeries[0] ?? null;
   const hoverIndex =
     hoverRatio !== null && hoverAnchorSeries
-      ? Math.round(hoverRatio * Math.max(hoverAnchorSeries.prices.length - 1, 0))
+      ? Math.round(
+          hoverRatio * Math.max(hoverAnchorSeries.prices.length - 1, 0),
+        )
       : null;
   const hoverX =
     hoverIndex !== null && hoverAnchorSeries
@@ -1010,7 +1162,9 @@ function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
         })
       : [];
   const hoverTimestamp =
-    hoverIndex !== null ? hoverAnchorSeries?.prices[hoverIndex]?.[0] ?? null : null;
+    hoverIndex !== null
+      ? (hoverAnchorSeries?.prices[hoverIndex]?.[0] ?? null)
+      : null;
   const tooltipLeftClass =
     hoverRatio !== null && hoverRatio > 0.62 ? "right-5" : "left-5";
 
@@ -1107,7 +1261,9 @@ function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
                       </p>
                       <p
                         className={`tabular-nums ${
-                          series.pctPoint >= 0 ? "text-emerald-400" : "text-red-400"
+                          series.pctPoint >= 0
+                            ? "text-emerald-400"
+                            : "text-red-400"
                         }`}
                       >
                         {series.pctPoint >= 0 ? "+" : ""}
@@ -1236,7 +1392,9 @@ function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
               <div className="text-right text-[14px] font-medium tabular-nums text-zinc-300">
                 {fmt(series.latest)}
               </div>
-              <div className={`text-right text-[14px] font-medium tabular-nums ${positive ? "text-emerald-400" : "text-red-400"}`}>
+              <div
+                className={`text-right text-[14px] font-medium tabular-nums ${positive ? "text-emerald-400" : "text-red-400"}`}
+              >
                 {positive ? "+" : "-"}
                 {fmt(Math.abs(priceChange))}
               </div>
@@ -2299,7 +2457,11 @@ function PortfolioStatTile({
   );
 }
 
-function PortfolioPositionsTable({ positions }: { positions: PortfolioPosition[] }) {
+function PortfolioPositionsTable({
+  positions,
+}: {
+  positions: PortfolioPosition[];
+}) {
   return (
     <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
       <div className="grid grid-cols-[1.1fr_0.75fr_0.9fr_0.95fr_0.95fr_1fr_0.85fr] gap-4 border-b border-white/[0.06] px-4 py-2.5 text-[11px] uppercase tracking-[0.16em] text-zinc-500">
@@ -2313,7 +2475,9 @@ function PortfolioPositionsTable({ positions }: { positions: PortfolioPosition[]
       </div>
 
       {positions.length === 0 ? (
-        <div className="px-4 py-10 text-sm text-zinc-500">No open positions.</div>
+        <div className="px-4 py-10 text-sm text-zinc-500">
+          No open positions.
+        </div>
       ) : (
         positions.map((position) => {
           const unrealized = Number(position.unrealized_pl || 0);
@@ -2450,6 +2614,202 @@ function PortfolioOrdersTable({
   );
 }
 
+const TOP_SOCIAL_MENTION_POSTS: SocialMentionPost[] = [
+  {
+    authorName: "Anichess",
+    authorHandle: "@AnichessGame",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2008582267493310464/OhIRrwTO_normal.jpg",
+    followers: 218129,
+    verified: true,
+    text: "CHECK Tuesday  Chess\n\nEthernal holders, Season 6 players, Kaito creators & Checkmate Reign participants, you can now claim your $CHECK rewards.\n\nOfficial link: https://anichess.com/checkmate-claim/\nClaim is live for 7 days.\n\nGo on, brag in comments.",
+    url: "https://x.com/AnichessGame/status/2033858560245879107",
+    publishTime: 1773744642,
+    views: 10171,
+    likes: 85,
+    replies: 53,
+    reposts: 16,
+    tokenName: "Checkmate",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38926.png",
+    platform: "base",
+    mediaUrls: [],
+  },
+  {
+    authorName: "Anichess",
+    authorHandle: "@AnichessGame",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2008582267493310464/OhIRrwTO_normal.jpg",
+    followers: 218129,
+    verified: true,
+    text: "960 Void Vanguards drop tomorrow\n\nEach one carries $CHECK unlocking January 23, 2027. Some carry 500,000 but the math is your business.\n\nAirdropped to everyone who sent their Ethernal to the Void, with the rest available on OpenSea.",
+    url: "https://x.com/AnichessGame/status/2037152129924665638",
+    publishTime: 1774529890,
+    views: 6866,
+    likes: 198,
+    replies: 139,
+    reposts: 48,
+    tokenName: "Checkmate",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38926.png",
+    platform: "base",
+    mediaUrls: [],
+  },
+  {
+    authorName: "Ignas | DeFi",
+    authorHandle: "@DefiIgnas",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/1572199012790603778/GF4NXSKr_normal.jpg",
+    followers: 159354,
+    verified: true,
+    text: "$STABLE is a scam that only works because it rides the corpo slop/stablecoin payment narrative.\n\nAnd they pretend to be Tempo or Plasma so some degen traders might get confused on which token to buy.\n\nYou can put lipstick on a pig, but it's still a pig.\n\nIt raised $28M seed in July 2025 and trades at $2.65B FDV on a $562M MC and only goes up to trap and rekt shorters.",
+    url: "https://x.com/DefiIgnas/status/2037563489938485478",
+    publishTime: 1774627966,
+    views: 34820,
+    likes: 260,
+    replies: 56,
+    reposts: 13,
+    tokenName: "STABLE",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38892.png",
+    platform: "bsc",
+    mediaUrls: [
+      "https://pbs.twimg.com/media/HEbgBALWQAAujWw.jpg",
+      "https://pbs.twimg.com/media/HEbgjlda4AEDVjG.jpg",
+    ],
+  },
+  {
+    authorName: "SolanaSniperX",
+    authorHandle: "@drdeepSOL",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2016431318402228224/ASHT21J-_normal.jpg",
+    followers: 11478,
+    verified: true,
+    text: "Claimed $CHECK from the Checkmate Reign drop.\n\nAs a Kaito creator, I appreciate when ecosystem participation translates into distribution.",
+    url: "https://x.com/drdeepSOL/status/2034237902025039939",
+    publishTime: 1773835084,
+    views: 817,
+    likes: 79,
+    replies: 22,
+    reposts: 21,
+    tokenName: "Checkmate",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38926.png",
+    platform: "base",
+    mediaUrls: ["https://pbs.twimg.com/media/HDsJAyJXIAAb9DV.png"],
+  },
+  {
+    authorName: "1Minute KR",
+    authorHandle: "@ONEMINNFT",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2019910500331749376/nQr6ehVP_normal.jpg",
+    followers: 108527,
+    verified: false,
+    text: "Stable is building the payment rail for the Agentic Era and honestly, this feels inevitable\n\nCitrini's Agentic Utilities report basically spells it out: agents break on payment complexity.\n\n$STABLE removes that entirely, USDT for gas + settlement, one token, no swaps, no volatility.",
+    url: "https://x.com/ONEMINNFT/status/2037571315822215287",
+    publishTime: 1774629832,
+    views: 12598,
+    likes: 53,
+    replies: 24,
+    reposts: 8,
+    tokenName: "STABLE",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38892.png",
+    platform: "bsc",
+    mediaUrls: [],
+  },
+  {
+    authorName: "Polkaguy.eth",
+    authorHandle: "@polkaguy",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2038838260517212160/oSX0bveb_normal.jpg",
+    followers: 32376,
+    verified: true,
+    text: "Big move from Bitpanda. They're building Vision Chain with Optimism, and $VSN powers the whole network.",
+    url: "https://x.com/polkaguy/status/2036759220729581964",
+    publishTime: 1774436214,
+    views: 4682,
+    likes: 119,
+    replies: 51,
+    reposts: 4,
+    tokenName: "Vision",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/37322.png",
+    platform: "arbitrum",
+    mediaUrls: [],
+  },
+  {
+    authorName: "Kevin Lee",
+    authorHandle: "@0xKevinRich",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2017263252258910208/X_z3uk8Y_normal.jpg",
+    followers: 208609,
+    verified: true,
+    text: "$JUP eligibility is in the works right now\n\nEvery Perps trade. Every Lend interaction. Every swap.\n\nJupiter saw it all. Snapshot's complete.\n\nFinal Jupuary = last chance. 200M JUP for active users. 200M for stakers.",
+    url: "https://x.com/0xKevinRich/status/2030647144009338981",
+    publishTime: 1772978981,
+    views: 0,
+    likes: 0,
+    replies: 0,
+    reposts: 0,
+    tokenName: "STABLE",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38892.png",
+    platform: "bsc",
+    mediaUrls: ["https://pbs.twimg.com/media/HC5OzhTawAAx_nz.jpg"],
+  },
+  {
+    authorName: "Anichess",
+    authorHandle: "@AnichessGame",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2008582267493310464/OhIRrwTO_normal.jpg",
+    followers: 218129,
+    verified: true,
+    text: "Introducing http://alibae.build, a new layer to the Anichess ecosystem.\n\nIt is a build-and-earn platform where creators use AI tools to produce contents, then earn $CHECK based on how that work performs.\n\nA second entry point into the Checkmate ecosystem.\n\nLearn more below.",
+    url: "https://x.com/AnichessGame/status/2038819875578405352",
+    publishTime: 1774927512,
+    views: 7437,
+    likes: 57,
+    replies: 16,
+    reposts: 24,
+    tokenName: "Checkmate",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38926.png",
+    platform: "base",
+    mediaUrls: ["https://pbs.twimg.com/media/HEtXaWIbgAAsJ-a.jpg"],
+  },
+  {
+    authorName: "Portal",
+    authorHandle: "@Portalcoin",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/1907726062672343040/WNgZ0jOT_normal.jpg",
+    followers: 289432,
+    verified: true,
+    text: "The $PORTAL - $CHECK pool on AerodromeFi is live.\n\nPortal and Anichess are aligned on the future of gaming and committed to building for the long game.",
+    url: "https://x.com/Portalcoin/status/2035002644700205472",
+    publishTime: 1774017413,
+    views: 7458,
+    likes: 126,
+    replies: 11,
+    reposts: 18,
+    tokenName: "Checkmate",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38926.png",
+    platform: "base",
+    mediaUrls: ["https://pbs.twimg.com/media/HD3HDS1WgAA959I.jpg"],
+  },
+  {
+    authorName: "Anichess",
+    authorHandle: "@AnichessGame",
+    authorAvatar:
+      "https://pbs.twimg.com/profile_images/2008582267493310464/OhIRrwTO_normal.jpg",
+    followers: 218129,
+    verified: true,
+    text: "CHECK your wallets, W1 of Anichess Season 7 rewards are here.\n\n339K $CHECK and 1.19M M8 were distributed to leaderboard players, random arena players, mission completions, rebates, and referrals.\n\nThe leaderboard is reset. Don't fade Checkmate.",
+    url: "https://x.com/AnichessGame/status/2036039619326718088",
+    publishTime: 1774264647,
+    views: 3777,
+    likes: 53,
+    replies: 14,
+    reposts: 15,
+    tokenName: "Checkmate",
+    tokenLogo: "https://s2.coinmarketcap.com/static/img/coins/64x64/38926.png",
+    platform: "base",
+    mediaUrls: [],
+  },
+];
+
 // ─── Donut for dominance ──────────────────────────────────────────────────────
 
 function DominanceDonut({ btc, eth }: { btc: number; eth: number }) {
@@ -2554,9 +2914,15 @@ export default function CryptoDashboard() {
   const [streaming, setStreaming] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [predictionSearch, setPredictionSearch] = useState("");
+  const [predictionFilter, setPredictionFilter] =
+    useState<PredictionBrowseFilter>("all");
   const [watchlistNews, setWatchlistNews] = useState<NewsItem[]>([]);
   const [watchlistNewsLoading, setWatchlistNewsLoading] = useState(false);
-  const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(null);
+  const [trendingNews, setTrendingNews] = useState<NewsItem[]>([]);
+  const [trendingNewsLoading, setTrendingNewsLoading] = useState(false);
+  const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(
+    null,
+  );
   const [portfolioRouteLoading, setPortfolioRouteLoading] = useState(false);
   const [portfolioRouteError, setPortfolioRouteError] = useState<string | null>(
     null,
@@ -2572,51 +2938,54 @@ export default function CryptoDashboard() {
   const predictionsSectionRef = useRef<HTMLElement>(null);
   const deferredPredictionSearch = useDeferredValue(predictionSearch);
 
-  const fetchData = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    else setRefreshing(true);
+  const fetchData = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
 
-    try {
-      if (pathname === "/predictions") {
-        const predRes = await fetch("/api/prediction?mode=grid&limit=90");
-        const pred = await predRes.json();
+      try {
+        if (pathname === "/predictions") {
+          const predRes = await fetch("/api/prediction?mode=grid&limit=90");
+          const pred = await predRes.json();
 
-        if (Array.isArray(pred)) setPredictions(pred);
-      } else if (pathname === "/portfolio") {
-        setDashboardUpdatedAt(Date.now());
-      } else {
-        const [marketsRes, globalRes, predRes, sentRes] = await Promise.all([
-          fetch(
-            "/api/crypto?endpoint=coins/markets&vs_currency=usd&order=market_cap_desc&per_page=30&page=1&sparkline=true&price_change_percentage=1h,24h,7d",
-          ),
-          fetch("/api/crypto?endpoint=global"),
-          fetch("/api/prediction"),
-          fetch("/api/sentiment"),
-        ]);
+          if (Array.isArray(pred)) setPredictions(pred);
+        } else if (pathname === "/portfolio") {
+          setDashboardUpdatedAt(Date.now());
+        } else {
+          const [marketsRes, globalRes, predRes, sentRes] = await Promise.all([
+            fetch(
+              "/api/crypto?endpoint=coins/markets&vs_currency=usd&order=market_cap_desc&per_page=30&page=1&sparkline=true&price_change_percentage=1h,24h,7d",
+            ),
+            fetch("/api/crypto?endpoint=global"),
+            fetch("/api/prediction"),
+            fetch("/api/sentiment"),
+          ]);
 
-        const [markets, global, pred, sent] = await Promise.all([
-          marketsRes.json(),
-          globalRes.json(),
-          predRes.json(),
-          sentRes.json(),
-        ]);
+          const [markets, global, pred, sent] = await Promise.all([
+            marketsRes.json(),
+            globalRes.json(),
+            predRes.json(),
+            sentRes.json(),
+          ]);
 
-        if (Array.isArray(markets)) setCoins(markets);
-        if (global?.data) setGlobalData(global.data);
-        if (Array.isArray(pred)) setPredictions(pred);
-        if (sent?.tone) setSentiment(sent);
+          if (Array.isArray(markets)) setCoins(markets);
+          if (global?.data) setGlobalData(global.data);
+          if (Array.isArray(pred)) setPredictions(pred);
+          if (sent?.tone) setSentiment(sent);
+        }
+
+        if (pathname !== "/portfolio") {
+          setDashboardUpdatedAt(Date.now());
+        }
+      } catch (e) {
+        console.error("Data fetch error:", e);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-
-      if (pathname !== "/portfolio") {
-        setDashboardUpdatedAt(Date.now());
-      }
-    } catch (e) {
-      console.error("Data fetch error:", e);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [pathname]);
+    },
+    [pathname],
+  );
 
   useEffect(() => {
     fetchData();
@@ -2624,32 +2993,35 @@ export default function CryptoDashboard() {
     return () => clearInterval(timer);
   }, [fetchData]);
 
-  const fetchPortfolioRouteData = useCallback(async (silent = false) => {
-    if (pathname !== "/portfolio") return;
+  const fetchPortfolioRouteData = useCallback(
+    async (silent = false) => {
+      if (pathname !== "/portfolio") return;
 
-    if (!silent) setPortfolioRouteLoading(true);
-    setPortfolioRouteError(null);
+      if (!silent) setPortfolioRouteLoading(true);
+      setPortfolioRouteError(null);
 
-    try {
-      const response = await fetch("/api/alpaca/portfolio");
-      const payload = (await response.json()) as PortfolioData & {
-        error?: string;
-      };
+      try {
+        const response = await fetch("/api/alpaca/portfolio");
+        const payload = (await response.json()) as PortfolioData & {
+          error?: string;
+        };
 
-      if (!response.ok) {
-        throw new Error(payload.error || "Failed to load portfolio.");
+        if (!response.ok) {
+          throw new Error(payload.error || "Failed to load portfolio.");
+        }
+
+        setPortfolioData(payload);
+      } catch (err) {
+        setPortfolioData(null);
+        setPortfolioRouteError(
+          err instanceof Error ? err.message : "Failed to load portfolio.",
+        );
+      } finally {
+        setPortfolioRouteLoading(false);
       }
-
-      setPortfolioData(payload);
-    } catch (err) {
-      setPortfolioData(null);
-      setPortfolioRouteError(
-        err instanceof Error ? err.message : "Failed to load portfolio.",
-      );
-    } finally {
-      setPortfolioRouteLoading(false);
-    }
-  }, [pathname]);
+    },
+    [pathname],
+  );
 
   useEffect(() => {
     if (pathname !== "/portfolio") return;
@@ -2983,7 +3355,12 @@ export default function CryptoDashboard() {
       return;
     }
 
-    if (pathname === "/" || pathname === "/watchlist" || pathname === "/portfolio") {
+    if (
+      pathname === "/" ||
+      pathname === "/watchlist" ||
+      pathname === "/portfolio" ||
+      pathname === "/trending"
+    ) {
       homeSectionRef.current?.scrollIntoView({ block: "start" });
     }
   }, [loading, pathname]);
@@ -3024,17 +3401,30 @@ export default function CryptoDashboard() {
 
     return score(a.question) - score(b.question);
   });
-  const filteredPredictionMarkets = prioritizedDiscussionMarkets.filter((market) => {
-    const needle = deferredPredictionSearch.trim().toLowerCase();
-    if (!needle) return true;
+  const filteredPredictionMarkets = prioritizedDiscussionMarkets.filter(
+    (market) => {
+      const needle = deferredPredictionSearch.trim().toLowerCase();
+      if (!matchesPredictionBrowseFilter(market, predictionFilter))
+        return false;
+      if (!needle) return true;
 
-    const haystacks = [
-      market.question ?? "",
-      ...(market.discussionOptions?.map((option) => option.label) ?? []),
-    ].join(" ").toLowerCase();
+      const haystacks = [
+        market.question ?? "",
+        ...(market.discussionOptions?.map((option) => option.label) ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
 
-    return haystacks.includes(needle);
-  });
+      return haystacks.includes(needle);
+    },
+  );
+  const visiblePredictionFilters = PREDICTION_BROWSE_FILTERS.filter(
+    (filter) =>
+      filter.key === "all" ||
+      prioritizedDiscussionMarkets.some((market) =>
+        matchesPredictionBrowseFilter(market, filter.key),
+      ),
+  );
   const topDiscussionMarkets = prioritizedDiscussionMarkets.slice(0, 2);
   const bitcoin = coins.find((coin) => coin.id === "bitcoin");
   const ethereum = coins.find((coin) => coin.id === "ethereum");
@@ -3084,7 +3474,8 @@ export default function CryptoDashboard() {
   const highVolumeCoins = [...coins]
     .sort((a, b) => b.total_volume - a.total_volume)
     .slice(0, 27);
-  const marketLeaders = marketLeadersTab === "up" ? surgingUpCoins : surgingDownCoins;
+  const marketLeaders =
+    marketLeadersTab === "up" ? surgingUpCoins : surgingDownCoins;
   const marketLeadersPageSize = 10;
   const marketLeadersPageCount = Math.max(
     1,
@@ -3116,9 +3507,28 @@ export default function CryptoDashboard() {
       Math.abs(a.price_change_percentage_24h),
   );
   const notablePriceMovers = watchlistMovers.slice(0, 3);
+  const trendingCoins = [...coins]
+    .sort((a, b) => {
+      const scoreA =
+        Math.abs(get1hChange(a)) * 0.45 +
+        Math.abs(a.price_change_percentage_24h) * 0.35 +
+        Math.abs(get7dChange(a)) * 0.1 +
+        Math.min(10, getVolumeAdvMultiple(a) * 8) * 0.1;
+      const scoreB =
+        Math.abs(get1hChange(b)) * 0.45 +
+        Math.abs(b.price_change_percentage_24h) * 0.35 +
+        Math.abs(get7dChange(b)) * 0.1 +
+        Math.min(10, getVolumeAdvMultiple(b) * 8) * 0.1;
+      return scoreB - scoreA;
+    })
+    .slice(0, 12);
   const watchlistNewsQuery = watchlistCoins
     .map((coin) => coin.name)
     .slice(0, 5)
+    .join(" OR ");
+  const trendingNewsQuery = trendingCoins
+    .slice(0, 5)
+    .map((coin) => coin.name)
     .join(" OR ");
 
   useEffect(() => {
@@ -3159,9 +3569,50 @@ export default function CryptoDashboard() {
     };
   }, [pathname, watchlistNewsQuery]);
 
+  useEffect(() => {
+    if (pathname !== "/trending" || !trendingNewsQuery) {
+      setTrendingNews([]);
+      setTrendingNewsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setTrendingNewsLoading(true);
+
+      try {
+        const response = await fetch(
+          `/api/news?q=${encodeURIComponent(trendingNewsQuery)}`,
+        );
+        const payload = (await response.json()) as { items?: NewsItem[] };
+
+        if (!cancelled) {
+          setTrendingNews(payload.items ?? []);
+        }
+      } catch {
+        if (!cancelled) {
+          setTrendingNews([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setTrendingNewsLoading(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, trendingNewsQuery]);
+
+  const topSocialMentionPosts = TOP_SOCIAL_MENTION_POSTS;
+
   const movers = activeTab === "gainers" ? gainers : losers;
   const moverRows = movers;
-  const sentimentDisplayLabel = sentiment?.label.replace(/\s+Sentiment$/i, "") ?? "";
+  const sentimentDisplayLabel =
+    sentiment?.label.replace(/\s+Sentiment$/i, "") ?? "";
   const sentimentColor =
     sentiment?.tone === "bullish"
       ? "text-emerald-400"
@@ -3199,7 +3650,9 @@ export default function CryptoDashboard() {
     bitcoin && {
       id: "bitcoin",
       title: `Bitcoin ${
-        bitcoin.price_change_percentage_24h >= 0 ? "pushes higher" : "pulls back"
+        bitcoin.price_change_percentage_24h >= 0
+          ? "pushes higher"
+          : "pulls back"
       } ${Math.abs(bitcoin.price_change_percentage_24h).toFixed(2)}% in 24 hours`,
       body: `Bitcoin is trading around ${fmt(bitcoin.current_price)} after moving between ${fmt(
         bitcoin.low_24h,
@@ -3295,6 +3748,7 @@ export default function CryptoDashboard() {
   const navTabs = [
     { label: "Home", href: "/" },
     { label: "Predictions", href: "/predictions" },
+    { label: "Trending", href: "/trending" },
     { label: "Watchlist", href: "/watchlist" },
     { label: "Portfolio", href: "/portfolio" },
   ] as const;
@@ -3311,7 +3765,6 @@ export default function CryptoDashboard() {
       <div className="flex min-h-screen">
         <aside className="sticky top-0 relative flex h-screen w-[62px] shrink-0 flex-col items-center justify-between overflow-hidden bg-[#050505] px-2 py-5 md:w-[72px] md:px-3">
           <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-white/[0.08]" />
-          <div className="pointer-events-none absolute inset-y-8 right-0 w-6 bg-gradient-to-l from-white/[0.06] via-white/[0.02] to-transparent blur-md" />
           <div className="pointer-events-none absolute inset-y-0 right-[10px] w-px bg-white/[0.04] md:right-[12px]" />
 
           <Link
@@ -3420,9 +3873,32 @@ export default function CryptoDashboard() {
                   )}
                 </div>
 
+                <div className="overflow-x-auto pb-1">
+                  <div className="flex min-w-max items-center gap-2">
+                    {visiblePredictionFilters.map((filter) => {
+                      const active = predictionFilter === filter.key;
+
+                      return (
+                        <button
+                          key={filter.key}
+                          type="button"
+                          onClick={() => setPredictionFilter(filter.key)}
+                          className={`rounded-full border px-4 py-2 text-xs font-medium transition-colors ${
+                            active
+                              ? "border-white/[0.16] bg-white/[0.1] text-white"
+                              : "border-white/[0.08] bg-[#0b0b0d] text-zinc-400 hover:border-white/[0.12] hover:text-zinc-200"
+                          }`}
+                        >
+                          {filter.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {filteredPredictionMarkets.length === 0 ? (
                   <div className="rounded-2xl border border-white/[0.07] bg-[#0a0a0a] px-6 py-10 text-center text-sm text-zinc-500">
-                    No prediction markets matched your search.
+                    No prediction markets matched your search and filter.
                   </div>
                 ) : (
                   <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
@@ -3433,10 +3909,7 @@ export default function CryptoDashboard() {
                 )}
               </section>
             ) : pathname === "/watchlist" ? (
-              <div
-                ref={homeSectionRef}
-                className="scroll-mt-24 space-y-6"
-              >
+              <div ref={homeSectionRef} className="scroll-mt-24 space-y-6">
                 <section className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
                     <h2 className="text-sm font-medium text-zinc-200">
@@ -3540,15 +4013,19 @@ export default function CryptoDashboard() {
                             </div>
                           </div>
                           <p className="text-[13px] leading-6 text-zinc-400">
-                            {coin.name} is trading at {fmt(coin.current_price)} after moving{" "}
+                            {coin.name} is trading at {fmt(coin.current_price)}{" "}
+                            after moving{" "}
                             <span
-                              className={positive ? "text-emerald-400" : "text-red-400"}
+                              className={
+                                positive ? "text-emerald-400" : "text-red-400"
+                              }
                             >
                               {positive ? "+" : "-"}
                               {pctCompact(coin.price_change_percentage_24h)}
                             </span>{" "}
-                            over the last day, with volume near {fmtBig(coin.total_volume)} and a
-                            7-day move of {pctCompact(get7dChange(coin))}.
+                            over the last day, with volume near{" "}
+                            {fmtBig(coin.total_volume)} and a 7-day move of{" "}
+                            {pctCompact(get7dChange(coin))}.
                           </p>
                         </div>
                       );
@@ -3562,7 +4039,9 @@ export default function CryptoDashboard() {
                       Watchlist News
                     </h2>
                     {watchlistNewsLoading && (
-                      <span className="text-xs text-zinc-500">Refreshing...</span>
+                      <span className="text-xs text-zinc-500">
+                        Refreshing...
+                      </span>
                     )}
                   </div>
                   <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
@@ -3585,7 +4064,9 @@ export default function CryptoDashboard() {
                         >
                           <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">
                             {item.source && <span>{item.source}</span>}
-                            {item.publishedAt && <span>{item.publishedAt}</span>}
+                            {item.publishedAt && (
+                              <span>{item.publishedAt}</span>
+                            )}
                           </div>
                           <p className="text-[14px] leading-6 text-zinc-200">
                             {item.title}
@@ -3605,7 +4086,8 @@ export default function CryptoDashboard() {
                         Portfolio
                       </h1>
                       <p className="mt-1 text-sm text-zinc-500">
-                        Live Alpaca account data from your configured API credentials.
+                        Live Alpaca account data from your configured API
+                        credentials.
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
@@ -3701,7 +4183,9 @@ export default function CryptoDashboard() {
                         />
                         <PortfolioStatTile
                           label="Filled Orders"
-                          value={String(portfolioData.summary.filled_orders_count)}
+                          value={String(
+                            portfolioData.summary.filled_orders_count,
+                          )}
                           detail={`Partially filled ${portfolioData.summary.partially_filled_orders_count}`}
                         />
                       </div>
@@ -3711,7 +4195,9 @@ export default function CryptoDashboard() {
                           <h2 className="text-sm font-medium text-zinc-200">
                             Open Positions
                           </h2>
-                          <PortfolioPositionsTable positions={portfolioData.positions} />
+                          <PortfolioPositionsTable
+                            positions={portfolioData.positions}
+                          />
                         </section>
 
                         <div className="space-y-4">
@@ -3754,9 +4240,9 @@ export default function CryptoDashboard() {
                                     Last Sync
                                   </p>
                                   <p className="mt-2 text-sm font-medium text-zinc-100">
-                                    {new Date(portfolioData.fetched_at).toLocaleString(
-                                      "en-US",
-                                    )}
+                                    {new Date(
+                                      portfolioData.fetched_at,
+                                    ).toLocaleString("en-US")}
                                   </p>
                                 </div>
                               </div>
@@ -3788,916 +4274,1319 @@ export default function CryptoDashboard() {
                   ) : null}
                 </section>
               </div>
-            ) : (
-            <div
-              ref={homeSectionRef}
-              className="scroll-mt-24 flex flex-col gap-5 lg:flex-row lg:items-start"
-            >
-              <div className="min-w-0 flex-1 space-y-5">
-            {/* ── Global stats bar ── */}
-            {globalData && (
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-zinc-500 border-b border-white/[0.05] pb-4">
-                <div className="flex items-center gap-1.5">
-                  <Globe className="w-3 h-3" />
-                  <span>Market Cap</span>
-                  <span className="text-zinc-200 font-medium">
-                    {fmtBig(globalData.total_market_cap.usd)}
-                  </span>
-                  <span
-                    className={
-                      globalData.market_cap_change_percentage_24h_usd >= 0
-                        ? "text-emerald-400"
-                        : "text-red-400"
-                    }
-                  >
-                    {pct(globalData.market_cap_change_percentage_24h_usd)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <BarChart2 className="w-3 h-3" />
-                  <span>24h Volume</span>
-                  <span className="text-zinc-200 font-medium">
-                    {fmtBig(globalData.total_volume.usd)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span>BTC Dom.</span>
-                  <span className="text-zinc-200 font-medium">
-                    {globalData.market_cap_percentage.btc.toFixed(1)}%
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span>ETH Dom.</span>
-                  <span className="text-zinc-200 font-medium">
-                    {globalData.market_cap_percentage.eth.toFixed(1)}%
-                  </span>
-                </div>
-              </div>
-            )}
+            ) : pathname === "/trending" ? (
+              <div
+                ref={homeSectionRef}
+                className="scroll-mt-24 flex flex-col gap-5 lg:flex-row lg:items-start"
+              >
+                <div className="min-w-0 flex-1 space-y-6">
+                  <section className="space-y-3">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                      <div>
+                        <h1 className="text-[22px] font-semibold text-zinc-100">
+                          Trending
+                        </h1>
+                        <p className="mt-1 text-sm text-zinc-500">
+                          The strongest cross-market movers, highest-conviction
+                          prediction markets, and the headlines driving them.
+                        </p>
+                      </div>
+                      <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                        {formatRelativeUpdate(dashboardUpdatedAt)}
+                      </span>
+                    </div>
 
-            {/* ── Market overview cards ── */}
-            <section>
-              <h2 className="text-sm font-medium text-zinc-500 uppercase tracking-wider mb-3">
-                Market Overview
-              </h2>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
-                {marketOverviewCoins.map((coin) => {
-                  const pos = coin.price_change_percentage_24h >= 0;
-                  const changeAbs = Math.abs(coin.price_change_24h ?? 0);
-                  return (
-                    <div
-                      key={coin.id}
-                      onClick={() =>
-                        window.open(
-                          `https://www.coingecko.com/en/coins/${coin.id}`,
-                          "_blank",
-                          "noopener,noreferrer",
-                        )
-                      }
-                      className="group bg-[#0a0a0a] border border-white/[0.07] rounded-xl hover:border-white/[0.14] hover:bg-[#111] transition-all cursor-pointer overflow-hidden"
-                    >
-                      <div className="px-3.5 pt-3.5 pb-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-white truncate leading-tight">
-                              {coin.name}
-                            </p>
-                            <p className="text-sm text-zinc-500 mt-1 tabular-nums">
-                              {fmt(coin.current_price)}
-                            </p>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      {trendingCoins.slice(0, 4).map((coin, index) => {
+                        const positive = coin.price_change_percentage_24h >= 0;
+                        const oneHour = get1hChange(coin);
+                        const sevenDay = get7dChange(coin);
+
+                        return (
+                          <div
+                            key={coin.id}
+                            className="rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] p-4 transition-colors hover:border-white/[0.12] hover:bg-[#0d0d0f]"
+                          >
+                            <div className="mb-4 flex items-center justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={coin.image}
+                                  alt={coin.name}
+                                  className="h-10 w-10 rounded-full bg-black/30 object-cover"
+                                />
+                                <div className="min-w-0">
+                                  <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                    {coin.name}
+                                  </p>
+                                  <p className="truncate text-[12px] uppercase tracking-[0.14em] text-zinc-500">
+                                    #{index + 1} trending
+                                  </p>
+                                </div>
+                              </div>
+                              <span
+                                className={`inline-flex items-center gap-1 text-[13px] font-medium tabular-nums ${
+                                  positive ? "text-emerald-400" : "text-red-400"
+                                }`}
+                              >
+                                {positive ? (
+                                  <ArrowUpRight className="h-3 w-3" />
+                                ) : (
+                                  <ArrowDownRight className="h-3 w-3" />
+                                )}
+                                {pctCompact(coin.price_change_percentage_24h)}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3 text-[12px]">
+                              <div>
+                                <p className="text-zinc-500">Price</p>
+                                <p className="mt-1 font-medium tabular-nums text-zinc-100">
+                                  {fmt(coin.current_price)}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-zinc-500">Volume</p>
+                                <p className="mt-1 font-medium tabular-nums text-zinc-100">
+                                  {fmtBig(coin.total_volume)}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-zinc-500">1H</p>
+                                <p
+                                  className={`mt-1 font-medium tabular-nums ${
+                                    oneHour >= 0
+                                      ? "text-emerald-400"
+                                      : "text-red-400"
+                                  }`}
+                                >
+                                  {oneHour >= 0 ? "+" : ""}
+                                  {oneHour.toFixed(2)}%
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-zinc-500">7D</p>
+                                <p
+                                  className={`mt-1 font-medium tabular-nums ${
+                                    sevenDay >= 0
+                                      ? "text-emerald-400"
+                                      : "text-red-400"
+                                  }`}
+                                >
+                                  {sevenDay >= 0 ? "+" : ""}
+                                  {sevenDay.toFixed(2)}%
+                                </p>
+                              </div>
+                            </div>
                           </div>
-                          <div className="text-right shrink-0">
-                            <span
-                              className={`text-sm font-semibold flex items-center justify-end gap-0.5 ${
-                                pos ? "text-emerald-400" : "text-red-400"
-                              }`}
-                            >
-                              {pos ? (
-                                <ArrowUpRight className="w-3 h-3" />
-                              ) : (
-                                <ArrowDownRight className="w-3 h-3" />
-                              )}
-                              {Math.abs(
-                                coin.price_change_percentage_24h,
-                              ).toFixed(2)}
-                              %
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <h2 className="text-sm font-medium text-zinc-200">
+                        Trending Assets
+                      </h2>
+                      <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                        Ranked by momentum, volume, and velocity
+                      </span>
+                    </div>
+                    <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                      <div className="grid grid-cols-[64px_minmax(0,1.4fr)_0.85fr_0.8fr_0.8fr_0.85fr_110px] gap-4 border-b border-white/[0.06] px-4 py-2.5 text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                        <span>Rank</span>
+                        <span>Asset</span>
+                        <span className="text-right">Price</span>
+                        <span className="text-right">1H</span>
+                        <span className="text-right">24H</span>
+                        <span className="text-right">Volume</span>
+                        <span className="text-right">7D Trend</span>
+                      </div>
+                      {trendingCoins.map((coin, index) => {
+                        const oneHour = get1hChange(coin);
+                        const oneDay = coin.price_change_percentage_24h ?? 0;
+
+                        return (
+                          <div
+                            key={coin.id}
+                            className="grid grid-cols-[64px_minmax(0,1.4fr)_0.85fr_0.8fr_0.8fr_0.85fr_110px] gap-4 border-b border-white/[0.06] px-4 py-3 last:border-b-0"
+                          >
+                            <div className="text-sm font-medium tabular-nums text-zinc-500">
+                              #{index + 1}
+                            </div>
+                            <div className="flex min-w-0 items-center gap-3">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={coin.image}
+                                alt={coin.name}
+                                className="h-9 w-9 rounded-full bg-black/30 object-cover"
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate text-[14px] font-medium text-zinc-100">
+                                  {coin.name}
+                                </p>
+                                <p className="truncate text-[12px] uppercase tracking-[0.12em] text-zinc-500">
+                                  {coin.symbol}
+                                </p>
+                              </div>
+                            </div>
+                            <span className="text-right text-[13px] tabular-nums text-zinc-300">
+                              {fmt(coin.current_price)}
                             </span>
-                            <p
-                              className={`text-sm font-medium mt-0.5 tabular-nums ${
-                                pos ? "text-emerald-600" : "text-red-600"
+                            <span
+                              className={`text-right text-[13px] tabular-nums ${
+                                oneHour >= 0
+                                  ? "text-emerald-400"
+                                  : "text-red-400"
                               }`}
                             >
-                              {pos ? "+" : "-"}
-                              {fmt(changeAbs)}
-                            </p>
+                              {oneHour >= 0 ? "+" : ""}
+                              {oneHour.toFixed(2)}%
+                            </span>
+                            <span
+                              className={`text-right text-[13px] tabular-nums ${
+                                oneDay >= 0
+                                  ? "text-emerald-400"
+                                  : "text-red-400"
+                              }`}
+                            >
+                              {oneDay >= 0 ? "+" : ""}
+                              {oneDay.toFixed(2)}%
+                            </span>
+                            <span className="text-right text-[13px] tabular-nums text-zinc-300">
+                              {fmtBig(coin.total_volume)}
+                            </span>
+                            <div className="flex justify-end">
+                              <MarketLeaderSparkline
+                                data={coin.sparkline_in_7d?.price ?? []}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                      {coin.sparkline_in_7d?.price && (
-                        <CardSparkline
-                          data={coin.sparkline_in_7d.price}
-                          positive={pos}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {topDiscussionMarkets.length > 0 && (
-              <section>
-                <div className="grid gap-3 xl:grid-cols-2">
-                  {topDiscussionMarkets.map((market) => (
-                    <DiscussionChartCard key={market.id} market={market} />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {marketSummaryItems.length > 0 && (
-              <section className="space-y-1.5">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-sm font-medium text-zinc-200">
-                    Market Summary
-                  </h2>
-                  <span className="text-xs text-zinc-500">
-                    {formatRelativeUpdate(dashboardUpdatedAt)}
-                  </span>
-                </div>
-
-                <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
-                  <Accordion
-                    type="single"
-                    collapsible
-                    defaultValue={marketSummaryItems[0]?.id}
-                    className="border-0"
-                  >
-                    {marketSummaryItems.map((item) => (
-                      <AccordionItem
-                        key={item.id}
-                        value={item.id}
-                        className="border-white/[0.06] last:border-b-0"
-                      >
-                        <AccordionTrigger className="px-4 text-[14px] leading-6 text-zinc-200 md:text-[15px]">
-                          {item.title}
-                        </AccordionTrigger>
-                        <AccordionContent className="px-4 text-[13px] leading-7 text-zinc-400">
-                          {item.body}
-                        </AccordionContent>
-                      </AccordionItem>
-                    ))}
-                  </Accordion>
-
-                  <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] px-4 py-2.5 text-xs text-zinc-500">
-                    <div className="flex items-center gap-3">
-                      {marketSummarySources.map((source) => (
-                        <span
-                          key={source.label}
-                          className="inline-flex items-center gap-1.5"
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={source.icon}
-                            alt={source.label}
-                            className="h-3.5 w-3.5 rounded-sm opacity-80"
-                          />
-                          <span>{source.label}</span>
-                        </span>
-                      ))}
-                    </div>
-                    <span>{coins.length + predictions.length} live inputs</span>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {marketLeaders.length > 0 && (
-              <section className="space-y-1.5">
-                <div className="flex items-center gap-6">
-                  <button
-                    type="button"
-                    onClick={() => setMarketLeadersTab("up")}
-                    className={`text-[14px] font-semibold transition-colors ${
-                      marketLeadersTab === "up"
-                        ? "text-zinc-100"
-                        : "text-zinc-500 hover:text-zinc-300"
-                    }`}
-                  >
-                    Surging Up
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMarketLeadersTab("down")}
-                    className={`text-[14px] font-semibold transition-colors ${
-                      marketLeadersTab === "down"
-                        ? "text-zinc-100"
-                        : "text-zinc-500 hover:text-zinc-300"
-                    }`}
-                  >
-                    Surging Down
-                  </button>
-                </div>
-
-                <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
-                  <div className="overflow-x-auto">
-                    <div className="min-w-[1020px]">
-                      <div className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.06] px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                        <span>Asset</span>
-                        <span className="text-right">Mkt Cap</span>
-                        <span className="text-right">Price</span>
-                        <span className="text-right">1H</span>
-                        <span className="text-right">24H</span>
-                        <span className="text-right">7D</span>
-                        <span className="text-right">Vol/Adv</span>
-                        <span className="text-center">Sentiment</span>
-                        <span className="text-right">7D Chart</span>
-                      </div>
-
-                      {marketLeaderRows.map((coin) => {
-                        const oneHour = get1hChange(coin);
-                        const oneDay = coin.price_change_percentage_24h ?? 0;
-                        const sevenDay = get7dChange(coin);
-                        const volumeAdv = getVolumeAdvMultiple(coin);
-                        const sentimentScore = getMomentumScore(coin);
-                        const multipleColor =
-                          volumeAdv >= 1.5
-                            ? "text-amber-400"
-                            : volumeAdv >= 1
-                              ? "text-zinc-300"
-                              : "text-zinc-500";
-
-                        return (
-                          <a
-                            key={coin.id}
-                            href={`https://www.coingecko.com/en/coins/${coin.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 px-4 py-3.5 transition-colors hover:bg-white/[0.02]"
-                          >
-                            <div className="flex min-w-0 items-center gap-3">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={coin.image}
-                                alt={coin.name}
-                                className="h-10 w-10 rounded-full bg-black/30 object-cover shrink-0"
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-[15px] font-semibold text-zinc-100">
-                                  {coin.name}
-                                </p>
-                                <p className="truncate text-[11px] uppercase tracking-wide text-zinc-500">
-                                  {coin.symbol}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
-                              {fmtBig(coin.market_cap)}
-                            </div>
-
-                            <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
-                              {fmt(coin.current_price)}
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
-                                  oneHour >= 0 ? "text-emerald-400" : "text-red-400"
-                                }`}
-                              >
-                                {oneHour >= 0 ? (
-                                  <ArrowUpRight className="h-3 w-3" />
-                                ) : (
-                                  <ArrowDownRight className="h-3 w-3" />
-                                )}
-                                {pctCompact(oneHour)}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
-                                  oneDay >= 0 ? "text-emerald-400" : "text-red-400"
-                                }`}
-                              >
-                                {oneDay >= 0 ? (
-                                  <ArrowUpRight className="h-3 w-3" />
-                                ) : (
-                                  <ArrowDownRight className="h-3 w-3" />
-                                )}
-                                {pctCompact(oneDay)}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
-                                  sevenDay >= 0 ? "text-emerald-400" : "text-red-400"
-                                }`}
-                              >
-                                {sevenDay >= 0 ? (
-                                  <ArrowUpRight className="h-3 w-3" />
-                                ) : (
-                                  <ArrowDownRight className="h-3 w-3" />
-                                )}
-                                {pctCompact(sevenDay)}
-                              </span>
-                            </div>
-
-                            <div className="flex flex-col items-end justify-center text-right">
-                              <span className="text-[13px] font-medium tabular-nums text-zinc-300">
-                                {fmtBig(coin.total_volume)}
-                              </span>
-                              <span className={`text-[12px] font-medium tabular-nums ${multipleColor}`}>
-                                {volumeAdv.toFixed(1)}x
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-center">
-                              <MarketSentimentMeter score={sentimentScore} />
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <MarketLeaderSparkline
-                                data={coin.sparkline_in_7d?.price ?? []}
-                              />
-                            </div>
-                          </a>
                         );
                       })}
-
-                      <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3 text-xs text-zinc-500">
-                        <span>
-                          {marketLeaders.length === 0
-                            ? "0 results"
-                            : `${clampedMarketLeadersPage * marketLeadersPageSize + 1}-${Math.min(
-                                (clampedMarketLeadersPage + 1) *
-                                  marketLeadersPageSize,
-                                marketLeaders.length,
-                              )} of ${marketLeaders.length}`}
-                        </span>
-                        <div className="flex items-center gap-4">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setMarketLeadersPage((page) => Math.max(0, page - 1))
-                            }
-                            disabled={clampedMarketLeadersPage === 0}
-                            className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
-                          >
-                            Prev
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setMarketLeadersPage((page) =>
-                                Math.min(marketLeadersPageCount - 1, page + 1),
-                              )
-                            }
-                            disabled={
-                              clampedMarketLeadersPage >= marketLeadersPageCount - 1
-                            }
-                            className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
-                          >
-                            Next
-                          </button>
-                        </div>
-                      </div>
                     </div>
-                  </div>
-                </div>
-              </section>
-            )}
+                  </section>
 
-            {highVolumeCoins.length > 0 && (
-              <section className="space-y-1.5">
-                <div className="flex items-center gap-6">
-                  <h2 className="text-[14px] font-semibold text-zinc-100">
-                    High Volume
-                  </h2>
-                </div>
-
-                <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
-                  <div className="overflow-x-auto">
-                    <div className="min-w-[1020px]">
-                      <div className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.06] px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                        <span>Asset</span>
-                        <span className="text-right">Mkt Cap</span>
-                        <span className="text-right">Price</span>
-                        <span className="text-right">1H</span>
-                        <span className="text-right">24H</span>
-                        <span className="text-right">7D</span>
-                        <span className="text-right">Vol/Adv</span>
-                        <span className="text-center">Sentiment</span>
-                        <span className="text-right">7D Chart</span>
-                      </div>
-
-                      {highVolumeRows.map((coin) => {
-                        const oneHour = get1hChange(coin);
-                        const oneDay = coin.price_change_percentage_24h ?? 0;
-                        const sevenDay = get7dChange(coin);
-                        const volumeAdv = getVolumeAdvMultiple(coin);
-                        const sentimentScore = getMomentumScore(coin);
-                        const multipleColor =
-                          volumeAdv >= 1.5
-                            ? "text-amber-400"
-                            : volumeAdv >= 1
-                              ? "text-zinc-300"
-                              : "text-zinc-500";
-
-                        return (
-                          <a
-                            key={coin.id}
-                            href={`https://www.coingecko.com/en/coins/${coin.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 px-4 py-3.5 transition-colors hover:bg-white/[0.02]"
-                          >
-                            <div className="flex min-w-0 items-center gap-3">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={coin.image}
-                                alt={coin.name}
-                                className="h-10 w-10 rounded-full bg-black/30 object-cover shrink-0"
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-[15px] font-semibold text-zinc-100">
-                                  {coin.name}
-                                </p>
-                                <p className="truncate text-[11px] uppercase tracking-wide text-zinc-500">
-                                  {coin.symbol}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
-                              {fmtBig(coin.market_cap)}
-                            </div>
-
-                            <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
-                              {fmt(coin.current_price)}
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
-                                  oneHour >= 0 ? "text-emerald-400" : "text-red-400"
-                                }`}
-                              >
-                                {oneHour >= 0 ? (
-                                  <ArrowUpRight className="h-3 w-3" />
-                                ) : (
-                                  <ArrowDownRight className="h-3 w-3" />
-                                )}
-                                {pctCompact(oneHour)}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
-                                  oneDay >= 0 ? "text-emerald-400" : "text-red-400"
-                                }`}
-                              >
-                                {oneDay >= 0 ? (
-                                  <ArrowUpRight className="h-3 w-3" />
-                                ) : (
-                                  <ArrowDownRight className="h-3 w-3" />
-                                )}
-                                {pctCompact(oneDay)}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
-                                  sevenDay >= 0 ? "text-emerald-400" : "text-red-400"
-                                }`}
-                              >
-                                {sevenDay >= 0 ? (
-                                  <ArrowUpRight className="h-3 w-3" />
-                                ) : (
-                                  <ArrowDownRight className="h-3 w-3" />
-                                )}
-                                {pctCompact(sevenDay)}
-                              </span>
-                            </div>
-
-                            <div className="flex flex-col items-end justify-center text-right">
-                              <span className="text-[13px] font-medium tabular-nums text-zinc-300">
-                                {fmtBig(coin.total_volume)}
-                              </span>
-                              <span className={`text-[12px] font-medium tabular-nums ${multipleColor}`}>
-                                {volumeAdv.toFixed(1)}x
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-center">
-                              <MarketSentimentMeter score={sentimentScore} />
-                            </div>
-
-                            <div className="flex items-center justify-end">
-                              <MarketLeaderSparkline
-                                data={coin.sparkline_in_7d?.price ?? []}
-                              />
-                            </div>
-                          </a>
-                        );
-                      })}
-
-                      <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3 text-xs text-zinc-500">
-                        <span>
-                          {highVolumeCoins.length === 0
-                            ? "0 results"
-                            : `${clampedHighVolumePage * marketLeadersPageSize + 1}-${Math.min(
-                                (clampedHighVolumePage + 1) *
-                                  marketLeadersPageSize,
-                                highVolumeCoins.length,
-                              )} of ${highVolumeCoins.length}`}
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <h2 className="text-sm font-medium text-zinc-200">
+                        Trending News
+                      </h2>
+                      {trendingNewsLoading && (
+                        <span className="text-xs text-zinc-500">
+                          Refreshing...
                         </span>
-                        <div className="flex items-center gap-4">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setHighVolumePage((page) => Math.max(0, page - 1))
-                            }
-                            disabled={clampedHighVolumePage === 0}
-                            className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
-                          >
-                            Prev
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setHighVolumePage((page) =>
-                                Math.min(highVolumePageCount - 1, page + 1),
-                              )
-                            }
-                            disabled={clampedHighVolumePage >= highVolumePageCount - 1}
-                            className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
-                          >
-                            Next
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {/* ── AI Chat panel ── */}
-            {showChat && messages.length > 0 && (
-              <section className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.05]">
-                  <div className="flex items-center gap-2">
-                    <Zap className="w-3.5 h-3.5 text-blue-400" />
-                    <span className="text-sm font-medium text-zinc-300">
-                      AI Analysis
-                    </span>
-                    <span className="text-sm text-zinc-600">
-                      · claude-sonnet-4-6
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setShowChat(false);
-                      setMessages([]);
-                    }}
-                    className="text-zinc-600 hover:text-zinc-300 transition-colors"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <div className="p-4 max-h-80 overflow-y-auto space-y-4">
-                  {messages.map((msg, idx) => (
-                    <div
-                      key={msg.id || idx}
-                      className={`flex gap-2.5 ${
-                        msg.role === "user" ? "justify-end" : "justify-start"
-                      }`}
-                    >
-                      {msg.role === "assistant" && (
-                        <div className="w-5 h-5 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                          <Zap className="w-2.5 h-2.5 text-blue-400" />
-                        </div>
                       )}
-                      {msg.role === "assistant" && msg.coinCard ? (
-                        <div className="flex-1 min-w-0 space-y-3">
-                          <CoinDetailCard meta={msg.coinCard} />
-                          {!msg.coinCard.loading &&
-                            msg.content &&
-                            msg.content !== "__ASSET_CARD__" && (
-                              <MarkdownMessage
-                                text={msg.content}
-                                streaming={false}
-                              />
-                            )}
-                          <MessageContext
-                            message={msg}
-                            disabled={streaming}
-                            onFollowUp={(prompt) => {
-                              void sendPrompt(prompt);
-                            }}
-                          />
+                    </div>
+                    <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                      {trendingNewsLoading && trendingNews.length === 0 ? (
+                        <div className="px-4 py-8 text-sm text-zinc-500">
+                          Loading trending headlines...
                         </div>
-                      ) : msg.role === "assistant" &&
-                        (msg.portfolio || msg.portfolioLoading) ? (
-                        <div className="flex-1 min-w-0 space-y-3">
-                          {msg.portfolio ? (
-                            <PortfolioCard data={msg.portfolio} />
-                          ) : (
-                            <div className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl p-6 flex items-center gap-3">
-                              <RefreshCw className="w-4 h-4 animate-spin text-zinc-500" />
-                              <span className="text-sm text-zinc-500">
-                                Loading portfolio data…
-                              </span>
-                            </div>
-                          )}
-                          {msg.content &&
-                            msg.content !== "__PORTFOLIO_CARD__" && (
-                              <MarkdownMessage
-                                text={msg.content}
-                                streaming={false}
-                              />
-                            )}
-                          <MessageContext
-                            message={msg}
-                            disabled={streaming}
-                            onFollowUp={(prompt) => {
-                              void sendPrompt(prompt);
-                            }}
-                          />
-                        </div>
-                      ) : msg.role === "assistant" ? (
-                        <div className="flex-1 min-w-0 max-w-[88%]">
-                          <MarkdownMessage
-                            text={msg.content}
-                            streaming={streaming && idx === messages.length - 1}
-                          />
-                          <MessageContext
-                            message={msg}
-                            disabled={streaming}
-                            onFollowUp={(prompt) => {
-                              void sendPrompt(prompt);
-                            }}
-                          />
+                      ) : trendingNews.length === 0 ? (
+                        <div className="px-4 py-8 text-sm text-zinc-500">
+                          No trending headlines available right now.
                         </div>
                       ) : (
-                        <div className="text-sm leading-relaxed max-w-[88%] bg-white/8 border border-white/8 rounded-2xl rounded-tr-sm px-3 py-2 text-zinc-200">
-                          {msg.content}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  <div ref={chatEndRef} />
-                </div>
-              </section>
-            )}
-          </div>
-          {/* end left column */}
-
-              {/* ── Right sidebar ── */}
-              <aside className="w-full lg:w-[300px] lg:shrink-0 lg:sticky lg:top-[88px] lg:self-start">
-                <section className="mb-4 overflow-hidden rounded-[22px] border border-white/[0.06] bg-[linear-gradient(180deg,rgba(14,14,18,0.98),rgba(7,7,10,0.98))] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                  <div className="border-b border-white/[0.06] px-3.5 pt-3 pb-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2.5">
-                        {([
-                          ["gainers", "Top Gainers"],
-                          ["losers", "Top Losers"],
-                        ] as const).map(([tab, label]) => (
-                          <button
-                            key={tab}
-                            type="button"
-                            onClick={() => setActiveTab(tab)}
-                            className={`whitespace-nowrap text-[11px] font-semibold leading-none transition-colors ${
-                              activeTab === tab
-                                ? "text-zinc-100"
-                                : "text-zinc-500 hover:text-zinc-300"
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-
-                      {sentiment && (
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1">
-                            {sentimentBars.map((isActive, index) => (
-                              <span
-                                key={index}
-                                className={`h-3.5 w-1 rounded-full ${
-                                  isActive ? sentimentBarColor : "bg-white/[0.09]"
-                                }`}
-                              />
-                            ))}
-                          </div>
-                          <span className={`whitespace-nowrap text-[11px] font-semibold ${sentimentColor}`}>
-                            {sentimentDisplayLabel}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-[minmax(0,1.25fr)_0.85fr_0.68fr_0.72fr] gap-2 border-b border-white/[0.06] px-3.5 py-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                    <span>Asset</span>
-                    <span className="text-right">Price</span>
-                    <span className="text-right">24H</span>
-                    <span className="text-right">Vol/MCap</span>
-                  </div>
-
-                  {moverRows.length === 0 ? (
-                    <div className="px-5 py-8 text-center text-sm text-zinc-600">
-                      No data
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-white/[0.04]">
-                      {moverRows.map((coin) => {
-                        const pos = coin.price_change_percentage_24h >= 0;
-                        const multiple = fmtVolumeMultiple(
-                          coin.total_volume,
-                          coin.market_cap,
-                        );
-                        const multipleValue =
-                          Number.parseFloat(multiple.replace("x", "")) || 0;
-                        const multipleColor =
-                          multipleValue >= 1.5
-                            ? "text-amber-400"
-                            : multipleValue >= 1
-                              ? "text-zinc-300"
-                              : "text-zinc-500";
-
-                        return (
+                        trendingNews.map((item, index) => (
                           <a
-                            key={coin.id}
-                            href={`https://www.coingecko.com/en/coins/${coin.id}`}
+                            key={`${item.link}-${index}`}
+                            href={item.link}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="grid grid-cols-[minmax(0,1.25fr)_0.85fr_0.68fr_0.72fr] gap-2 px-3.5 py-2.5 transition-colors hover:bg-white/[0.02]"
+                            className="block border-b border-white/[0.06] px-4 py-4 last:border-b-0 transition-colors hover:bg-white/[0.02]"
                           >
-                            <div className="flex min-w-0 items-center gap-2">
+                            <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                              {item.source && <span>{item.source}</span>}
+                              {item.publishedAt && (
+                                <span>{item.publishedAt}</span>
+                              )}
+                            </div>
+                            <p className="text-[14px] leading-6 text-zinc-200">
+                              {item.title}
+                            </p>
+                          </a>
+                        ))
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                <aside className="w-full lg:w-[360px] lg:shrink-0 lg:sticky lg:top-[88px] lg:self-start">
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Hash className="h-4 w-4 text-[#5d7cff]" />
+                        <h2 className="text-[15px] font-semibold text-zinc-100">
+                          Top Social Mentions
+                        </h2>
+                      </div>
+                    </div>
+                    <div className="overflow-hidden border border-white/[0.07] bg-[#0a0a0a]">
+                      <div className="max-h-[calc(100vh-150px)] overflow-y-auto divide-y divide-white/[0.06] pr-1">
+                        {topSocialMentionPosts.map((item) => (
+                          <div
+                            key={`${item.authorHandle}-${item.url}`}
+                            className="px-4 py-5"
+                          >
+                            <div className="mb-4 flex items-center gap-3">
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
-                                src={coin.image}
-                                alt={coin.name}
-                                className="h-8 w-8 rounded-full bg-black/30 object-cover shrink-0"
+                                src={item.authorAvatar}
+                                alt={item.authorName}
+                                className="h-12 w-12 rounded-full object-cover"
                               />
                               <div className="min-w-0">
-                                <p className="truncate text-[12px] font-semibold leading-tight text-zinc-100">
-                                  {coin.name}
-                                </p>
-                                <p className="truncate text-[10px] uppercase text-zinc-500">
-                                  {coin.symbol}
+                                <div className="flex items-center gap-2">
+                                  <p className="truncate text-[14px] font-semibold text-zinc-100">
+                                    {item.authorName}
+                                  </p>
+                                  <span className="truncate text-[13px] text-zinc-500">
+                                    {item.authorHandle}
+                                  </span>
+                                </div>
+                                <p className="mt-0.5 flex items-center gap-2 text-[12px] text-zinc-500">
+                                  <span>X</span>
+                                  <span>
+                                    {fmtCount(item.followers)} Followers
+                                  </span>
+                                  <span className="rounded-full border border-white/[0.08] px-1.5 py-0.5 text-[10px] uppercase">
+                                    {item.tokenName}
+                                  </span>
                                 </p>
                               </div>
                             </div>
 
-                            <div className="flex items-center justify-end text-right">
-                              <span className="text-[12px] font-medium tabular-nums text-zinc-300">
-                                {fmt(coin.current_price)}
-                              </span>
-                            </div>
+                            <p className="mb-4 whitespace-pre-line text-[14px] leading-8 text-zinc-100">
+                              {item.text}{" "}
+                              <a
+                                href={item.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[#5d7cff] hover:text-[#7f96ff]"
+                              >
+                                Read All
+                              </a>
+                            </p>
 
-                            <div className="flex items-center justify-end text-right">
-                              <span
-                                className={`inline-flex items-center gap-0.5 text-[12px] font-medium tabular-nums ${
-                                  pos ? "text-emerald-400" : "text-red-400"
+                            {item.mediaUrls && item.mediaUrls.length > 0 && (
+                              <div
+                                className={`mb-4 grid gap-2 ${
+                                  item.mediaUrls.length === 1
+                                    ? "grid-cols-1"
+                                    : "grid-cols-2"
                                 }`}
                               >
-                                {pos ? (
-                                  <ArrowUpRight className="h-2.5 w-2.5" />
-                                ) : (
-                                  <ArrowDownRight className="h-2.5 w-2.5" />
-                                )}
-                                {Math.abs(coin.price_change_percentage_24h).toFixed(1)}%
-                              </span>
-                            </div>
+                                {item.mediaUrls.slice(0, 2).map((mediaUrl) => (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    key={mediaUrl}
+                                    src={mediaUrl}
+                                    alt={item.tokenName}
+                                    className="h-[150px] w-full rounded-2xl border border-white/[0.06] object-cover"
+                                  />
+                                ))}
+                              </div>
+                            )}
 
-                            <div className="flex items-center justify-end text-right">
-                              <span className={`text-[12px] font-medium tabular-nums ${multipleColor}`}>
-                                {multiple}
+                            <div className="flex items-center justify-between gap-3 text-[12px] text-zinc-500">
+                              <span>
+                                {formatRelativeAgeFromUnix(item.publishTime)}
                               </span>
+                              <div className="flex items-center gap-4">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Eye className="h-3.5 w-3.5" />
+                                  {fmtCount(item.views)}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Heart className="h-3.5 w-3.5" />
+                                  {fmtCount(item.likes)}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5">
+                                  <MessageCircleMore className="h-3.5 w-3.5" />
+                                  {fmtCount(item.replies)}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Repeat2 className="h-3.5 w-3.5" />
+                                  {fmtCount(item.reposts)}
+                                </span>
+                              </div>
                             </div>
-                          </a>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+                </aside>
+              </div>
+            ) : (
+              <div
+                ref={homeSectionRef}
+                className="scroll-mt-24 flex flex-col gap-5 lg:flex-row lg:items-start"
+              >
+                <div className="min-w-0 flex-1 space-y-5">
+                  {/* ── Global stats bar ── */}
+                  {globalData && (
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-zinc-500 border-b border-white/[0.05] pb-4">
+                      <div className="flex items-center gap-1.5">
+                        <Globe className="w-3 h-3" />
+                        <span>Market Cap</span>
+                        <span className="text-zinc-200 font-medium">
+                          {fmtBig(globalData.total_market_cap.usd)}
+                        </span>
+                        <span
+                          className={
+                            globalData.market_cap_change_percentage_24h_usd >= 0
+                              ? "text-emerald-400"
+                              : "text-red-400"
+                          }
+                        >
+                          {pct(globalData.market_cap_change_percentage_24h_usd)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <BarChart2 className="w-3 h-3" />
+                        <span>24h Volume</span>
+                        <span className="text-zinc-200 font-medium">
+                          {fmtBig(globalData.total_volume.usd)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span>BTC Dom.</span>
+                        <span className="text-zinc-200 font-medium">
+                          {globalData.market_cap_percentage.btc.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span>ETH Dom.</span>
+                        <span className="text-zinc-200 font-medium">
+                          {globalData.market_cap_percentage.eth.toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Market overview cards ── */}
+                  <section>
+                    <h2 className="text-sm font-medium text-zinc-500 uppercase tracking-wider mb-3">
+                      Market Overview
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                      {marketOverviewCoins.map((coin) => {
+                        const pos = coin.price_change_percentage_24h >= 0;
+                        const changeAbs = Math.abs(coin.price_change_24h ?? 0);
+                        return (
+                          <div
+                            key={coin.id}
+                            onClick={() =>
+                              window.open(
+                                `https://www.coingecko.com/en/coins/${coin.id}`,
+                                "_blank",
+                                "noopener,noreferrer",
+                              )
+                            }
+                            className="group bg-[#0a0a0a] border border-white/[0.07] rounded-xl hover:border-white/[0.14] hover:bg-[#111] transition-all cursor-pointer overflow-hidden"
+                          >
+                            <div className="px-3.5 pt-3.5 pb-2">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-white truncate leading-tight">
+                                    {coin.name}
+                                  </p>
+                                  <p className="text-sm text-zinc-500 mt-1 tabular-nums">
+                                    {fmt(coin.current_price)}
+                                  </p>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <span
+                                    className={`text-sm font-semibold flex items-center justify-end gap-0.5 ${
+                                      pos ? "text-emerald-400" : "text-red-400"
+                                    }`}
+                                  >
+                                    {pos ? (
+                                      <ArrowUpRight className="w-3 h-3" />
+                                    ) : (
+                                      <ArrowDownRight className="w-3 h-3" />
+                                    )}
+                                    {Math.abs(
+                                      coin.price_change_percentage_24h,
+                                    ).toFixed(2)}
+                                    %
+                                  </span>
+                                  <p
+                                    className={`text-sm font-medium mt-0.5 tabular-nums ${
+                                      pos ? "text-emerald-600" : "text-red-600"
+                                    }`}
+                                  >
+                                    {pos ? "+" : "-"}
+                                    {fmt(changeAbs)}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                            {coin.sparkline_in_7d?.price && (
+                              <CardSparkline
+                                data={coin.sparkline_in_7d.price}
+                                positive={pos}
+                              />
+                            )}
+                          </div>
                         );
                       })}
                     </div>
+                  </section>
+
+                  {topDiscussionMarkets.length > 0 && (
+                    <section>
+                      <div className="grid gap-3 xl:grid-cols-2">
+                        {topDiscussionMarkets.map((market) => (
+                          <DiscussionChartCard
+                            key={market.id}
+                            market={market}
+                          />
+                        ))}
+                      </div>
+                    </section>
                   )}
-                </section>
 
-                <section
-                  ref={predictionsSectionRef}
-                  className="scroll-mt-24"
-                >
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
-                  Top Discussion
-                </h2>
-                <a
-                  href="https://polymarket.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-zinc-600 hover:text-zinc-400 flex items-center gap-1 transition-colors"
-                >
-                  Polymarket
-                  <ExternalLink className="w-2.5 h-2.5" />
-                </a>
-              </div>
+                  {marketSummaryItems.length > 0 && (
+                    <section className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <h2 className="text-sm font-medium text-zinc-200">
+                          Market Summary
+                        </h2>
+                        <span className="text-xs text-zinc-500">
+                          {formatRelativeUpdate(dashboardUpdatedAt)}
+                        </span>
+                      </div>
 
-              {predictions.length === 0 ? (
-                <div className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl p-8 text-center">
-                  <p className="text-sm text-zinc-600">
-                    Prediction markets unavailable
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  {predictions.map((market) => {
-                    const yesPct = Math.round(
-                      parseFloat(market.outcomePrices?.[0] ?? "0.5") * 100,
-                    );
-                    const isHigh = yesPct >= 50;
-                    const vol = parseFloat(market.volume ?? "0");
+                      <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                        <Accordion
+                          type="single"
+                          collapsible
+                          defaultValue={marketSummaryItems[0]?.id}
+                          className="border-0"
+                        >
+                          {marketSummaryItems.map((item) => (
+                            <AccordionItem
+                              key={item.id}
+                              value={item.id}
+                              className="border-white/[0.06] last:border-b-0"
+                            >
+                              <AccordionTrigger className="px-4 text-[14px] leading-6 text-zinc-200 md:text-[15px]">
+                                {item.title}
+                              </AccordionTrigger>
+                              <AccordionContent className="px-4 text-[13px] leading-7 text-zinc-400">
+                                {item.body}
+                              </AccordionContent>
+                            </AccordionItem>
+                          ))}
+                        </Accordion>
 
-                    return (
-                      <a
-                        key={market.id}
-                        href={
-                          market.slug
-                            ? `https://polymarket.com/event/${market.slug}`
-                            : "https://polymarket.com"
-                        }
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block bg-[#0a0a0a] border border-white/[0.14] rounded-xl p-4 hover:border-white/[0.25] hover:bg-[#111] transition-all cursor-pointer"
-                      >
-                        <p className="text-sm font-medium text-zinc-200 leading-snug mb-3 line-clamp-2">
-                          {market.question}
-                        </p>
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between text-sm">
-                            <div className="flex gap-2">
+                        <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] px-4 py-2.5 text-xs text-zinc-500">
+                          <div className="flex items-center gap-3">
+                            {marketSummarySources.map((source) => (
                               <span
-                                className={
-                                  isHigh ? "text-emerald-400" : "text-zinc-400"
-                                }
+                                key={source.label}
+                                className="inline-flex items-center gap-1.5"
                               >
-                                Yes{" "}
-                                <span className="font-semibold tabular-nums">
-                                  {yesPct}%
-                                </span>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={source.icon}
+                                  alt={source.label}
+                                  className="h-3.5 w-3.5 rounded-sm opacity-80"
+                                />
+                                <span>{source.label}</span>
                               </span>
-                              <span
-                                className={
-                                  !isHigh ? "text-red-400" : "text-zinc-500"
-                                }
-                              >
-                                No{" "}
-                                <span className="font-semibold tabular-nums">
-                                  {100 - yesPct}%
-                                </span>
+                            ))}
+                          </div>
+                          <span>
+                            {coins.length + predictions.length} live inputs
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+                  )}
+
+                  {marketLeaders.length > 0 && (
+                    <section className="space-y-1.5">
+                      <div className="flex items-center gap-6">
+                        <button
+                          type="button"
+                          onClick={() => setMarketLeadersTab("up")}
+                          className={`text-[14px] font-semibold transition-colors ${
+                            marketLeadersTab === "up"
+                              ? "text-zinc-100"
+                              : "text-zinc-500 hover:text-zinc-300"
+                          }`}
+                        >
+                          Surging Up
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMarketLeadersTab("down")}
+                          className={`text-[14px] font-semibold transition-colors ${
+                            marketLeadersTab === "down"
+                              ? "text-zinc-100"
+                              : "text-zinc-500 hover:text-zinc-300"
+                          }`}
+                        >
+                          Surging Down
+                        </button>
+                      </div>
+
+                      <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                        <div className="overflow-x-auto">
+                          <div className="min-w-[1020px]">
+                            <div className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.06] px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                              <span>Asset</span>
+                              <span className="text-right">Mkt Cap</span>
+                              <span className="text-right">Price</span>
+                              <span className="text-right">1H</span>
+                              <span className="text-right">24H</span>
+                              <span className="text-right">7D</span>
+                              <span className="text-right">Vol/Adv</span>
+                              <span className="text-center">Sentiment</span>
+                              <span className="text-right">7D Chart</span>
+                            </div>
+
+                            {marketLeaderRows.map((coin) => {
+                              const oneHour = get1hChange(coin);
+                              const oneDay =
+                                coin.price_change_percentage_24h ?? 0;
+                              const sevenDay = get7dChange(coin);
+                              const volumeAdv = getVolumeAdvMultiple(coin);
+                              const sentimentScore = getMomentumScore(coin);
+                              const multipleColor =
+                                volumeAdv >= 1.5
+                                  ? "text-amber-400"
+                                  : volumeAdv >= 1
+                                    ? "text-zinc-300"
+                                    : "text-zinc-500";
+
+                              return (
+                                <a
+                                  key={coin.id}
+                                  href={`https://www.coingecko.com/en/coins/${coin.id}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 px-4 py-3.5 transition-colors hover:bg-white/[0.02]"
+                                >
+                                  <div className="flex min-w-0 items-center gap-3">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={coin.image}
+                                      alt={coin.name}
+                                      className="h-10 w-10 rounded-full bg-black/30 object-cover shrink-0"
+                                    />
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                        {coin.name}
+                                      </p>
+                                      <p className="truncate text-[11px] uppercase tracking-wide text-zinc-500">
+                                        {coin.symbol}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
+                                    {fmtBig(coin.market_cap)}
+                                  </div>
+
+                                  <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
+                                    {fmt(coin.current_price)}
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
+                                        oneHour >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {oneHour >= 0 ? (
+                                        <ArrowUpRight className="h-3 w-3" />
+                                      ) : (
+                                        <ArrowDownRight className="h-3 w-3" />
+                                      )}
+                                      {pctCompact(oneHour)}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
+                                        oneDay >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {oneDay >= 0 ? (
+                                        <ArrowUpRight className="h-3 w-3" />
+                                      ) : (
+                                        <ArrowDownRight className="h-3 w-3" />
+                                      )}
+                                      {pctCompact(oneDay)}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
+                                        sevenDay >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {sevenDay >= 0 ? (
+                                        <ArrowUpRight className="h-3 w-3" />
+                                      ) : (
+                                        <ArrowDownRight className="h-3 w-3" />
+                                      )}
+                                      {pctCompact(sevenDay)}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex flex-col items-end justify-center text-right">
+                                    <span className="text-[13px] font-medium tabular-nums text-zinc-300">
+                                      {fmtBig(coin.total_volume)}
+                                    </span>
+                                    <span
+                                      className={`text-[12px] font-medium tabular-nums ${multipleColor}`}
+                                    >
+                                      {volumeAdv.toFixed(1)}x
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-center">
+                                    <MarketSentimentMeter
+                                      score={sentimentScore}
+                                    />
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <MarketLeaderSparkline
+                                      data={coin.sparkline_in_7d?.price ?? []}
+                                    />
+                                  </div>
+                                </a>
+                              );
+                            })}
+
+                            <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3 text-xs text-zinc-500">
+                              <span>
+                                {marketLeaders.length === 0
+                                  ? "0 results"
+                                  : `${clampedMarketLeadersPage * marketLeadersPageSize + 1}-${Math.min(
+                                      (clampedMarketLeadersPage + 1) *
+                                        marketLeadersPageSize,
+                                      marketLeaders.length,
+                                    )} of ${marketLeaders.length}`}
                               </span>
+                              <div className="flex items-center gap-4">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setMarketLeadersPage((page) =>
+                                      Math.max(0, page - 1),
+                                    )
+                                  }
+                                  disabled={clampedMarketLeadersPage === 0}
+                                  className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
+                                >
+                                  Prev
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setMarketLeadersPage((page) =>
+                                      Math.min(
+                                        marketLeadersPageCount - 1,
+                                        page + 1,
+                                      ),
+                                    )
+                                  }
+                                  disabled={
+                                    clampedMarketLeadersPage >=
+                                    marketLeadersPageCount - 1
+                                  }
+                                  className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
+                                >
+                                  Next
+                                </button>
+                              </div>
                             </div>
                           </div>
-                          <div className="h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `${yesPct}%`,
-                                background: isHigh
-                                  ? "linear-gradient(90deg,#22c55e,#16a34a)"
-                                  : "linear-gradient(90deg,#ef4444,#dc2626)",
-                              }}
-                            />
-                          </div>
-                          <div className="flex items-center justify-between text-sm text-zinc-600">
-                            <span>Vol {fmtBig(vol)}</span>
-                            {market.endDate && (
+                        </div>
+                      </div>
+                    </section>
+                  )}
+
+                  {highVolumeCoins.length > 0 && (
+                    <section className="space-y-1.5">
+                      <div className="flex items-center gap-6">
+                        <h2 className="text-[14px] font-semibold text-zinc-100">
+                          High Volume
+                        </h2>
+                      </div>
+
+                      <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                        <div className="overflow-x-auto">
+                          <div className="min-w-[1020px]">
+                            <div className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.06] px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                              <span>Asset</span>
+                              <span className="text-right">Mkt Cap</span>
+                              <span className="text-right">Price</span>
+                              <span className="text-right">1H</span>
+                              <span className="text-right">24H</span>
+                              <span className="text-right">7D</span>
+                              <span className="text-right">Vol/Adv</span>
+                              <span className="text-center">Sentiment</span>
+                              <span className="text-right">7D Chart</span>
+                            </div>
+
+                            {highVolumeRows.map((coin) => {
+                              const oneHour = get1hChange(coin);
+                              const oneDay =
+                                coin.price_change_percentage_24h ?? 0;
+                              const sevenDay = get7dChange(coin);
+                              const volumeAdv = getVolumeAdvMultiple(coin);
+                              const sentimentScore = getMomentumScore(coin);
+                              const multipleColor =
+                                volumeAdv >= 1.5
+                                  ? "text-amber-400"
+                                  : volumeAdv >= 1
+                                    ? "text-zinc-300"
+                                    : "text-zinc-500";
+
+                              return (
+                                <a
+                                  key={coin.id}
+                                  href={`https://www.coingecko.com/en/coins/${coin.id}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="grid grid-cols-[2.25fr_0.95fr_0.9fr_0.65fr_0.65fr_0.65fr_0.85fr_0.8fr_0.8fr] gap-3 px-4 py-3.5 transition-colors hover:bg-white/[0.02]"
+                                >
+                                  <div className="flex min-w-0 items-center gap-3">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={coin.image}
+                                      alt={coin.name}
+                                      className="h-10 w-10 rounded-full bg-black/30 object-cover shrink-0"
+                                    />
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                        {coin.name}
+                                      </p>
+                                      <p className="truncate text-[11px] uppercase tracking-wide text-zinc-500">
+                                        {coin.symbol}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
+                                    {fmtBig(coin.market_cap)}
+                                  </div>
+
+                                  <div className="flex items-center justify-end text-right text-[14px] font-medium tabular-nums text-zinc-300">
+                                    {fmt(coin.current_price)}
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
+                                        oneHour >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {oneHour >= 0 ? (
+                                        <ArrowUpRight className="h-3 w-3" />
+                                      ) : (
+                                        <ArrowDownRight className="h-3 w-3" />
+                                      )}
+                                      {pctCompact(oneHour)}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
+                                        oneDay >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {oneDay >= 0 ? (
+                                        <ArrowUpRight className="h-3 w-3" />
+                                      ) : (
+                                        <ArrowDownRight className="h-3 w-3" />
+                                      )}
+                                      {pctCompact(oneDay)}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className={`inline-flex items-center gap-0.5 text-[13px] font-medium tabular-nums ${
+                                        sevenDay >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {sevenDay >= 0 ? (
+                                        <ArrowUpRight className="h-3 w-3" />
+                                      ) : (
+                                        <ArrowDownRight className="h-3 w-3" />
+                                      )}
+                                      {pctCompact(sevenDay)}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex flex-col items-end justify-center text-right">
+                                    <span className="text-[13px] font-medium tabular-nums text-zinc-300">
+                                      {fmtBig(coin.total_volume)}
+                                    </span>
+                                    <span
+                                      className={`text-[12px] font-medium tabular-nums ${multipleColor}`}
+                                    >
+                                      {volumeAdv.toFixed(1)}x
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-center">
+                                    <MarketSentimentMeter
+                                      score={sentimentScore}
+                                    />
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <MarketLeaderSparkline
+                                      data={coin.sparkline_in_7d?.price ?? []}
+                                    />
+                                  </div>
+                                </a>
+                              );
+                            })}
+
+                            <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3 text-xs text-zinc-500">
                               <span>
-                                {new Date(market.endDate).toLocaleDateString(
-                                  "en-US",
-                                  {
-                                    month: "short",
-                                    day: "numeric",
-                                    year: "2-digit",
-                                  },
-                                )}
+                                {highVolumeCoins.length === 0
+                                  ? "0 results"
+                                  : `${clampedHighVolumePage * marketLeadersPageSize + 1}-${Math.min(
+                                      (clampedHighVolumePage + 1) *
+                                        marketLeadersPageSize,
+                                      highVolumeCoins.length,
+                                    )} of ${highVolumeCoins.length}`}
                               </span>
-                            )}
+                              <div className="flex items-center gap-4">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setHighVolumePage((page) =>
+                                      Math.max(0, page - 1),
+                                    )
+                                  }
+                                  disabled={clampedHighVolumePage === 0}
+                                  className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
+                                >
+                                  Prev
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setHighVolumePage((page) =>
+                                      Math.min(
+                                        highVolumePageCount - 1,
+                                        page + 1,
+                                      ),
+                                    )
+                                  }
+                                  disabled={
+                                    clampedHighVolumePage >=
+                                    highVolumePageCount - 1
+                                  }
+                                  className="transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:text-zinc-700"
+                                >
+                                  Next
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      </a>
-                    );
-                  })}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* ── AI Chat panel ── */}
+                  {showChat && messages.length > 0 && (
+                    <section className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl overflow-hidden">
+                      <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.05]">
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-3.5 h-3.5 text-blue-400" />
+                          <span className="text-sm font-medium text-zinc-300">
+                            AI Analysis
+                          </span>
+                          <span className="text-sm text-zinc-600">
+                            · claude-sonnet-4-6
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setShowChat(false);
+                            setMessages([]);
+                          }}
+                          className="text-zinc-600 hover:text-zinc-300 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="p-4 max-h-80 overflow-y-auto space-y-4">
+                        {messages.map((msg, idx) => (
+                          <div
+                            key={msg.id || idx}
+                            className={`flex gap-2.5 ${
+                              msg.role === "user"
+                                ? "justify-end"
+                                : "justify-start"
+                            }`}
+                          >
+                            {msg.role === "assistant" && (
+                              <div className="w-5 h-5 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0 mt-0.5">
+                                <Zap className="w-2.5 h-2.5 text-blue-400" />
+                              </div>
+                            )}
+                            {msg.role === "assistant" && msg.coinCard ? (
+                              <div className="flex-1 min-w-0 space-y-3">
+                                <CoinDetailCard meta={msg.coinCard} />
+                                {!msg.coinCard.loading &&
+                                  msg.content &&
+                                  msg.content !== "__ASSET_CARD__" && (
+                                    <MarkdownMessage
+                                      text={msg.content}
+                                      streaming={false}
+                                    />
+                                  )}
+                                <MessageContext
+                                  message={msg}
+                                  disabled={streaming}
+                                  onFollowUp={(prompt) => {
+                                    void sendPrompt(prompt);
+                                  }}
+                                />
+                              </div>
+                            ) : msg.role === "assistant" &&
+                              (msg.portfolio || msg.portfolioLoading) ? (
+                              <div className="flex-1 min-w-0 space-y-3">
+                                {msg.portfolio ? (
+                                  <PortfolioCard data={msg.portfolio} />
+                                ) : (
+                                  <div className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl p-6 flex items-center gap-3">
+                                    <RefreshCw className="w-4 h-4 animate-spin text-zinc-500" />
+                                    <span className="text-sm text-zinc-500">
+                                      Loading portfolio data…
+                                    </span>
+                                  </div>
+                                )}
+                                {msg.content &&
+                                  msg.content !== "__PORTFOLIO_CARD__" && (
+                                    <MarkdownMessage
+                                      text={msg.content}
+                                      streaming={false}
+                                    />
+                                  )}
+                                <MessageContext
+                                  message={msg}
+                                  disabled={streaming}
+                                  onFollowUp={(prompt) => {
+                                    void sendPrompt(prompt);
+                                  }}
+                                />
+                              </div>
+                            ) : msg.role === "assistant" ? (
+                              <div className="flex-1 min-w-0 max-w-[88%]">
+                                <MarkdownMessage
+                                  text={msg.content}
+                                  streaming={
+                                    streaming && idx === messages.length - 1
+                                  }
+                                />
+                                <MessageContext
+                                  message={msg}
+                                  disabled={streaming}
+                                  onFollowUp={(prompt) => {
+                                    void sendPrompt(prompt);
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <div className="text-sm leading-relaxed max-w-[88%] bg-white/8 border border-white/8 rounded-2xl rounded-tr-sm px-3 py-2 text-zinc-200">
+                                {msg.content}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        <div ref={chatEndRef} />
+                      </div>
+                    </section>
+                  )}
                 </div>
-              )}
-                </section>
-              </aside>
-            </div>
+                {/* end left column */}
+
+                {/* ── Right sidebar ── */}
+                <aside className="w-full lg:w-[300px] lg:shrink-0 lg:sticky lg:top-[88px] lg:self-start">
+                  <section className="mb-4 overflow-hidden rounded-[22px] border border-white/[0.06] bg-[linear-gradient(180deg,rgba(14,14,18,0.98),rgba(7,7,10,0.98))] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                    <div className="border-b border-white/[0.06] px-3.5 pt-3 pb-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          {(
+                            [
+                              ["gainers", "Top Gainers"],
+                              ["losers", "Top Losers"],
+                            ] as const
+                          ).map(([tab, label]) => (
+                            <button
+                              key={tab}
+                              type="button"
+                              onClick={() => setActiveTab(tab)}
+                              className={`whitespace-nowrap text-[11px] font-semibold leading-none transition-colors ${
+                                activeTab === tab
+                                  ? "text-zinc-100"
+                                  : "text-zinc-500 hover:text-zinc-300"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {sentiment && (
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1">
+                              {sentimentBars.map((isActive, index) => (
+                                <span
+                                  key={index}
+                                  className={`h-3.5 w-1 rounded-full ${
+                                    isActive
+                                      ? sentimentBarColor
+                                      : "bg-white/[0.09]"
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                            <span
+                              className={`whitespace-nowrap text-[11px] font-semibold ${sentimentColor}`}
+                            >
+                              {sentimentDisplayLabel}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-[minmax(0,1.25fr)_0.85fr_0.68fr_0.72fr] gap-2 border-b border-white/[0.06] px-3.5 py-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                      <span>Asset</span>
+                      <span className="text-right">Price</span>
+                      <span className="text-right">24H</span>
+                      <span className="text-right">Vol/MCap</span>
+                    </div>
+
+                    {moverRows.length === 0 ? (
+                      <div className="px-5 py-8 text-center text-sm text-zinc-600">
+                        No data
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-white/[0.04]">
+                        {moverRows.map((coin) => {
+                          const pos = coin.price_change_percentage_24h >= 0;
+                          const multiple = fmtVolumeMultiple(
+                            coin.total_volume,
+                            coin.market_cap,
+                          );
+                          const multipleValue =
+                            Number.parseFloat(multiple.replace("x", "")) || 0;
+                          const multipleColor =
+                            multipleValue >= 1.5
+                              ? "text-amber-400"
+                              : multipleValue >= 1
+                                ? "text-zinc-300"
+                                : "text-zinc-500";
+
+                          return (
+                            <a
+                              key={coin.id}
+                              href={`https://www.coingecko.com/en/coins/${coin.id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="grid grid-cols-[minmax(0,1.25fr)_0.85fr_0.68fr_0.72fr] gap-2 px-3.5 py-2.5 transition-colors hover:bg-white/[0.02]"
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={coin.image}
+                                  alt={coin.name}
+                                  className="h-8 w-8 rounded-full bg-black/30 object-cover shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <p className="truncate text-[12px] font-semibold leading-tight text-zinc-100">
+                                    {coin.name}
+                                  </p>
+                                  <p className="truncate text-[10px] uppercase text-zinc-500">
+                                    {coin.symbol}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-end text-right">
+                                <span className="text-[12px] font-medium tabular-nums text-zinc-300">
+                                  {fmt(coin.current_price)}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center justify-end text-right">
+                                <span
+                                  className={`inline-flex items-center gap-0.5 text-[12px] font-medium tabular-nums ${
+                                    pos ? "text-emerald-400" : "text-red-400"
+                                  }`}
+                                >
+                                  {pos ? (
+                                    <ArrowUpRight className="h-2.5 w-2.5" />
+                                  ) : (
+                                    <ArrowDownRight className="h-2.5 w-2.5" />
+                                  )}
+                                  {Math.abs(
+                                    coin.price_change_percentage_24h,
+                                  ).toFixed(1)}
+                                  %
+                                </span>
+                              </div>
+
+                              <div className="flex items-center justify-end text-right">
+                                <span
+                                  className={`text-[12px] font-medium tabular-nums ${multipleColor}`}
+                                >
+                                  {multiple}
+                                </span>
+                              </div>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  <section ref={predictionsSectionRef} className="scroll-mt-24">
+                    <div className="flex items-center justify-between mb-3">
+                      <h2 className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
+                        Top Discussion
+                      </h2>
+                      <a
+                        href="https://polymarket.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-zinc-600 hover:text-zinc-400 flex items-center gap-1 transition-colors"
+                      >
+                        Polymarket
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </div>
+
+                    {predictions.length === 0 ? (
+                      <div className="bg-[#0a0a0a] border border-white/[0.07] rounded-xl p-8 text-center">
+                        <p className="text-sm text-zinc-600">
+                          Prediction markets unavailable
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5">
+                        {predictions.map((market) => {
+                          const yesPct = Math.round(
+                            parseFloat(market.outcomePrices?.[0] ?? "0.5") *
+                              100,
+                          );
+                          const isHigh = yesPct >= 50;
+                          const vol = parseFloat(market.volume ?? "0");
+
+                          return (
+                            <a
+                              key={market.id}
+                              href={
+                                market.slug
+                                  ? `https://polymarket.com/event/${market.slug}`
+                                  : "https://polymarket.com"
+                              }
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block bg-[#0a0a0a] border border-white/[0.14] rounded-xl p-4 hover:border-white/[0.25] hover:bg-[#111] transition-all cursor-pointer"
+                            >
+                              <p className="text-sm font-medium text-zinc-200 leading-snug mb-3 line-clamp-2">
+                                {market.question}
+                              </p>
+                              <div className="space-y-1.5">
+                                <div className="flex items-center justify-between text-sm">
+                                  <div className="flex gap-2">
+                                    <span
+                                      className={
+                                        isHigh
+                                          ? "text-emerald-400"
+                                          : "text-zinc-400"
+                                      }
+                                    >
+                                      Yes{" "}
+                                      <span className="font-semibold tabular-nums">
+                                        {yesPct}%
+                                      </span>
+                                    </span>
+                                    <span
+                                      className={
+                                        !isHigh
+                                          ? "text-red-400"
+                                          : "text-zinc-500"
+                                      }
+                                    >
+                                      No{" "}
+                                      <span className="font-semibold tabular-nums">
+                                        {100 - yesPct}%
+                                      </span>
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full"
+                                    style={{
+                                      width: `${yesPct}%`,
+                                      background: isHigh
+                                        ? "linear-gradient(90deg,#22c55e,#16a34a)"
+                                        : "linear-gradient(90deg,#ef4444,#dc2626)",
+                                    }}
+                                  />
+                                </div>
+                                <div className="flex items-center justify-between text-sm text-zinc-600">
+                                  <span>Vol {fmtBig(vol)}</span>
+                                  {market.endDate && (
+                                    <span>
+                                      {new Date(
+                                        market.endDate,
+                                      ).toLocaleDateString("en-US", {
+                                        month: "short",
+                                        day: "numeric",
+                                        year: "2-digit",
+                                      })}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                </aside>
+              </div>
             )}
           </main>
         </div>
