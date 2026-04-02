@@ -350,6 +350,30 @@ function buildLinePath(
   }, "");
 }
 
+function buildLinePathWithBounds(
+  points: number[],
+  min: number,
+  max: number,
+  width: number,
+  height: number,
+  padding = 4,
+): string {
+  if (points.length === 0) return "";
+
+  const range = max - min || 1;
+  const innerWidth = width - padding * 2;
+  const innerHeight = height - padding * 2;
+
+  return points.reduce((path, point, index) => {
+    const x =
+      padding + (index / Math.max(points.length - 1, 1)) * Math.max(innerWidth, 0);
+    const normalized = (point - min) / range;
+    const y = padding + (1 - normalized) * Math.max(innerHeight, 0);
+
+    return `${path}${index === 0 ? "M" : " L"} ${x} ${y}`;
+  }, "");
+}
+
 function pctCompact(n?: number): string {
   if (!Number.isFinite(n)) return "--";
   return `${Math.abs(n ?? 0).toFixed(1)}%`;
@@ -688,6 +712,555 @@ function PredictionBrowseCard({ market }: { market: PredictionMarket }) {
         )}
       </div>
     </a>
+  );
+}
+
+const WATCHLIST_RANGES = ["1D", "1M", "6M"] as const;
+
+type WatchlistRange = (typeof WATCHLIST_RANGES)[number];
+type WatchlistHistoryPoint = [number, number];
+
+function buildFallbackHistory(coin: CoinData): WatchlistHistoryPoint[] {
+  const sparkline = coin.sparkline_in_7d?.price ?? [];
+  if (sparkline.length < 2) {
+    const now = Date.now();
+    const price = coin.current_price || 0;
+    return [
+      [now - 60 * 60 * 1000, price],
+      [now, price],
+    ];
+  }
+
+  const now = Date.now();
+  const step = (7 * 24 * 60 * 60 * 1000) / Math.max(sparkline.length - 1, 1);
+
+  return sparkline.map(
+    (price, index) =>
+      [now - (sparkline.length - 1 - index) * step, price] as WatchlistHistoryPoint,
+  );
+}
+
+function formatWatchlistAxisLabel(
+  timestamp: number,
+  range: WatchlistRange,
+): string {
+  const date = new Date(timestamp);
+
+  switch (range) {
+    case "1D":
+      return date.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    case "1M":
+    case "6M":
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+    case "YTD":
+    case "1Y":
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+      });
+    case "5Y":
+      return date.toLocaleDateString("en-US", {
+        year: "numeric",
+      });
+    default:
+      return "";
+  }
+}
+
+function buildWatchlistAxisLabels(
+  prices: WatchlistHistoryPoint[],
+  range: WatchlistRange,
+  count = 6,
+): string[] {
+  if (!prices.length) return [];
+
+  const total = Math.min(count, prices.length);
+
+  return Array.from({ length: total }, (_, index) => {
+    const targetIndex =
+      total === 1
+        ? prices.length - 1
+        : Math.round((index / (total - 1)) * (prices.length - 1));
+
+    return formatWatchlistAxisLabel(prices[targetIndex][0], range);
+  });
+}
+
+function formatWatchlistHoverLabel(
+  timestamp: number,
+  range: WatchlistRange,
+): string {
+  const date = new Date(timestamp);
+
+  switch (range) {
+    case "1D":
+      return date.toLocaleString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        month: "short",
+        day: "numeric",
+      });
+    case "1M":
+    case "5Y":
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    default:
+      return date.toLocaleDateString("en-US");
+  }
+}
+
+function WatchlistMoversChart({ coins }: { coins: CoinData[] }) {
+  const palette = ["#39c7d9", "#f08c67", "#e6cf57", "#c38ae6", "#ff5a66", "#5fd1a5"];
+  const chartWidth = 1180;
+  const chartHeight = 360;
+  const chartPadding = 18;
+  const [range, setRange] = useState<WatchlistRange>("1D");
+  const [renderedRange, setRenderedRange] = useState<WatchlistRange>("1D");
+  const [loadingRange, setLoadingRange] = useState(false);
+  const [hoverRatio, setHoverRatio] = useState<number | null>(null);
+  const [historyByRange, setHistoryByRange] = useState<
+    Partial<Record<WatchlistRange, Record<string, WatchlistHistoryPoint[]>>>
+  >({});
+  const coinKey = coins.map((coin) => coin.id).join("|");
+
+  useEffect(() => {
+    let cancelled = false;
+    const cachedSeries = historyByRange[range] ?? {};
+    const hasFullRange = coins.every((coin) => cachedSeries[coin.id]?.length);
+
+    if (hasFullRange) {
+      if (renderedRange !== range) {
+        setRenderedRange(range);
+      }
+      setLoadingRange(false);
+      return;
+    }
+
+    const missingCoins = coins.filter((coin) => !(cachedSeries[coin.id]?.length));
+
+    if (!missingCoins.length) return;
+
+    const loadHistory = async () => {
+      setLoadingRange(true);
+
+      try {
+        const results: Array<{
+          coinId: string;
+          prices: WatchlistHistoryPoint[];
+        }> = [];
+
+        for (let index = 0; index < missingCoins.length; index += 2) {
+          const batch = missingCoins.slice(index, index + 2);
+          const batchResults = await Promise.all(
+            batch.map(async (coin) => {
+              try {
+                const res = await fetch(
+                  `/api/coin-detail?coinId=${encodeURIComponent(coin.id)}&range=${range}&historyOnly=1`,
+                );
+                if (!res.ok) throw new Error(`${res.status}`);
+
+                const detail = (await res.json()) as Pick<CoinDetail, "prices">;
+                return {
+                  coinId: coin.id,
+                  prices:
+                    detail.prices?.filter(
+                      (point): point is WatchlistHistoryPoint =>
+                        Array.isArray(point) &&
+                        point.length === 2 &&
+                        Number.isFinite(point[0]) &&
+                        Number.isFinite(point[1]),
+                    ) ?? [],
+                };
+              } catch {
+                return {
+                  coinId: coin.id,
+                  prices: buildFallbackHistory(coin),
+                };
+              }
+            }),
+          );
+
+          results.push(...batchResults);
+
+          if (cancelled) return;
+        }
+
+        if (cancelled) return;
+
+        setHistoryByRange((prev) => {
+          const nextRangeSeries = { ...(prev[range] ?? {}) };
+          results.forEach(({ coinId, prices }) => {
+            nextRangeSeries[coinId] = prices;
+          });
+
+          return {
+            ...prev,
+            [range]: nextRangeSeries,
+          };
+        });
+        setRenderedRange(range);
+      } finally {
+        if (!cancelled) {
+          setLoadingRange(false);
+        }
+      }
+    };
+
+    void loadHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [coinKey, coins, historyByRange, range, renderedRange]);
+
+  useEffect(() => {
+    setHoverRatio(null);
+  }, [renderedRange]);
+
+  const percentSeries = coins
+    .map((coin, index) => {
+      const prices =
+        historyByRange[renderedRange]?.[coin.id] ??
+        (renderedRange === "1D" ? buildFallbackHistory(coin) : []);
+      if (prices.length < 2 || !prices[0]?.[1]) return null;
+
+      const base = prices[0][1];
+      if (!Number.isFinite(base) || base === 0) return null;
+
+      const points = prices.map(([, price]) => ((price - base) / base) * 100);
+      const latest = prices[prices.length - 1]?.[1] ?? coin.current_price;
+      const deltaPrice = latest - base;
+      const deltaPct = ((latest - base) / base) * 100;
+
+      return {
+        coin,
+        color: palette[index % palette.length],
+        points,
+        prices,
+        latest,
+        deltaPrice,
+        deltaPct,
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        coin: CoinData;
+        color: string;
+        points: number[];
+        prices: WatchlistHistoryPoint[];
+        latest: number;
+        deltaPrice: number;
+        deltaPct: number;
+      } => Boolean(item),
+    );
+
+  const allValues = percentSeries.flatMap((item) => item.points);
+  const min = Math.min(...allValues, -5);
+  const max = Math.max(...allValues, 1);
+  const timeLabels = buildWatchlistAxisLabels(
+    percentSeries[0]?.prices ?? [],
+    renderedRange,
+  );
+  const hoverAnchorSeries = percentSeries[0] ?? null;
+  const hoverIndex =
+    hoverRatio !== null && hoverAnchorSeries
+      ? Math.round(hoverRatio * Math.max(hoverAnchorSeries.prices.length - 1, 0))
+      : null;
+  const hoverX =
+    hoverIndex !== null && hoverAnchorSeries
+      ? chartPadding +
+        (hoverIndex / Math.max(hoverAnchorSeries.prices.length - 1, 1)) *
+          Math.max(chartWidth - chartPadding * 2, 0)
+      : null;
+  const hoveredSeries =
+    hoverRatio !== null
+      ? percentSeries.map((series) => {
+          const pointIndex = Math.round(
+            hoverRatio * Math.max(series.prices.length - 1, 0),
+          );
+          const point = series.prices[pointIndex];
+          const pctPoint = series.points[pointIndex] ?? 0;
+          const x =
+            chartPadding +
+            (pointIndex / Math.max(series.prices.length - 1, 1)) *
+              Math.max(chartWidth - chartPadding * 2, 0);
+          const normalized = (pctPoint - min) / (max - min || 1);
+          const y =
+            chartPadding +
+            (1 - normalized) * Math.max(chartHeight - chartPadding * 2, 0);
+
+          return {
+            ...series,
+            pointIndex,
+            point,
+            pctPoint,
+            x,
+            y,
+          };
+        })
+      : [];
+  const hoverTimestamp =
+    hoverIndex !== null ? hoverAnchorSeries?.prices[hoverIndex]?.[0] ?? null : null;
+  const tooltipLeftClass =
+    hoverRatio !== null && hoverRatio > 0.62 ? "right-5" : "left-5";
+
+  return (
+    <div className="border-y border-white/[0.07] bg-[#0a0a0a]">
+      <div className="border-b border-white/[0.06] px-4 py-3">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-1">
+            {WATCHLIST_RANGES.map((itemRange) => (
+              <button
+                key={itemRange}
+                type="button"
+                onClick={() => setRange(itemRange)}
+                className={`rounded-xl px-3 py-2 text-[12px] font-medium transition-colors ${
+                  range === itemRange
+                    ? "bg-white/[0.08] text-zinc-100"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+                aria-pressed={range === itemRange}
+              >
+                {itemRange}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="rounded-2xl border border-white/[0.08] px-4 py-2 text-[13px] text-zinc-400 transition-colors hover:border-white/[0.12] hover:text-zinc-200"
+          >
+            Compare
+          </button>
+        </div>
+
+        <div
+          className="relative h-[360px] overflow-hidden rounded-[18px] border border-white/[0.05] bg-[linear-gradient(180deg,rgba(255,255,255,0.015),transparent)]"
+          onMouseLeave={() => setHoverRatio(null)}
+          onMouseMove={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const nextRatio = (event.clientX - rect.left) / rect.width;
+            setHoverRatio(Math.max(0, Math.min(1, nextRatio)));
+          }}
+        >
+          <div className="pointer-events-none absolute inset-0">
+            {Array.from({ length: 10 }, (_, index) => (
+              <div
+                key={`v-${index}`}
+                className="absolute top-0 bottom-0 w-px bg-white/[0.04]"
+                style={{ left: `${(index / 9) * 100}%` }}
+              />
+            ))}
+            {Array.from({ length: 5 }, (_, index) => (
+              <div
+                key={`h-${index}`}
+                className="absolute left-0 right-0 h-px bg-white/[0.04]"
+                style={{ top: `${(index / 4) * 100}%` }}
+              />
+            ))}
+            <div
+              className="absolute left-0 right-0 h-px border-t border-dashed border-white/[0.18]"
+              style={{
+                top: `${chartPadding + ((max - 0) / (max - min || 1)) * (chartHeight - chartPadding * 2)}px`,
+              }}
+            />
+          </div>
+
+          <div className="pointer-events-none absolute left-5 top-6 text-[12px] text-zinc-500">
+            0%
+          </div>
+
+          {hoverTimestamp && hoveredSeries.length > 0 && (
+            <div
+              className={`pointer-events-none absolute top-5 z-10 min-w-[190px] rounded-2xl border border-white/[0.08] bg-black/75 px-3 py-2.5 backdrop-blur-md ${tooltipLeftClass}`}
+            >
+              <p className="mb-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                {formatWatchlistHoverLabel(hoverTimestamp, renderedRange)}
+              </p>
+              <div className="space-y-1.5">
+                {hoveredSeries.map((series) => (
+                  <div
+                    key={`${series.coin.id}-${series.pointIndex}`}
+                    className="flex items-center justify-between gap-3 text-[12px]"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: series.color }}
+                      />
+                      <span className="truncate text-zinc-300">
+                        {series.coin.symbol.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-medium tabular-nums text-zinc-100">
+                        {fmt(series.point?.[1] ?? series.latest)}
+                      </p>
+                      <p
+                        className={`tabular-nums ${
+                          series.pctPoint >= 0 ? "text-emerald-400" : "text-red-400"
+                        }`}
+                      >
+                        {series.pctPoint >= 0 ? "+" : ""}
+                        {series.pctPoint.toFixed(1)}%
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {loadingRange && (
+            <div className="pointer-events-none absolute right-5 top-5 flex items-center gap-2 rounded-full border border-white/[0.08] bg-black/40 px-2.5 py-1 text-[11px] text-zinc-400 backdrop-blur-sm">
+              <RefreshCw className="h-3 w-3 animate-spin" />
+              Updating
+            </div>
+          )}
+
+          <svg
+            viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+            className={`h-full w-full transition-opacity ${
+              loadingRange ? "opacity-75" : "opacity-100"
+            }`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            {hoverX !== null && (
+              <line
+                x1={hoverX}
+                x2={hoverX}
+                y1={0}
+                y2={chartHeight}
+                stroke="rgba(255,255,255,0.18)"
+                strokeWidth="1"
+                strokeDasharray="4 6"
+              />
+            )}
+            {percentSeries.map((series) => (
+              <path
+                key={series.coin.id}
+                d={buildLinePathWithBounds(
+                  series.points,
+                  min,
+                  max,
+                  chartWidth,
+                  chartHeight,
+                  chartPadding,
+                )}
+                fill="none"
+                stroke={series.color}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ))}
+            {hoveredSeries.map((series) =>
+              series.point ? (
+                <g key={`${series.coin.id}-hover`}>
+                  <circle
+                    cx={series.x}
+                    cy={series.y}
+                    r="5"
+                    fill="rgba(0,0,0,0.72)"
+                    stroke={series.color}
+                    strokeWidth="2"
+                  />
+                  <circle
+                    cx={series.x}
+                    cy={series.y}
+                    r="2.25"
+                    fill={series.color}
+                  />
+                </g>
+              ) : null,
+            )}
+          </svg>
+
+          <div className="pointer-events-none absolute bottom-4 left-5 right-5 flex items-center justify-between text-[11px] text-zinc-500">
+            {timeLabels.map((label, index) => (
+              <span key={`${label}-${index}`}>{label}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="grid grid-cols-[10px_minmax(0,1.6fr)_0.9fr_0.8fr_0.8fr] items-center gap-4 border-b border-white/[0.06] px-4 py-2 text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+          <span />
+          <span>Asset</span>
+          <span className="text-right">Price</span>
+          <span className="text-right">{renderedRange} Change</span>
+          <span className="text-right">{renderedRange} %</span>
+        </div>
+        {percentSeries.map((series) => {
+          const coin = series.coin;
+          const priceChange = series.deltaPrice;
+          const pctChange = series.deltaPct;
+          const positive = pctChange >= 0;
+
+          return (
+            <div
+              key={coin.id}
+              className="grid grid-cols-[10px_minmax(0,1.6fr)_0.9fr_0.8fr_0.8fr] items-center gap-4 border-b border-white/[0.06] px-4 py-3 last:border-b-0"
+            >
+              <span
+                className="h-10 w-2 rounded-full"
+                style={{ backgroundColor: series.color }}
+              />
+              <div className="flex min-w-0 items-center gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={coin.image}
+                  alt={coin.name}
+                  className="h-10 w-10 rounded-xl bg-black/30 object-cover"
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-[14px] font-semibold text-zinc-100">
+                    {coin.name}
+                  </p>
+                  <p className="truncate text-[12px] text-zinc-500">
+                    {coin.symbol.toUpperCase()} · CRYPTO
+                  </p>
+                </div>
+              </div>
+              <div className="text-right text-[14px] font-medium tabular-nums text-zinc-300">
+                {fmt(series.latest)}
+              </div>
+              <div className={`text-right text-[14px] font-medium tabular-nums ${positive ? "text-emerald-400" : "text-red-400"}`}>
+                {positive ? "+" : "-"}
+                {fmt(Math.abs(priceChange))}
+              </div>
+              <div className="flex justify-end">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-[13px] font-medium tabular-nums ${
+                    positive
+                      ? "bg-emerald-500/12 text-emerald-400"
+                      : "bg-red-500/12 text-red-400"
+                  }`}
+                >
+                  {positive ? (
+                    <ArrowUpRight className="h-3 w-3" />
+                  ) : (
+                    <ArrowDownRight className="h-3 w-3" />
+                  )}
+                  {pctCompact(pctChange)}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1695,6 +2268,188 @@ function PortfolioCard({ data }: { data: PortfolioData }) {
   );
 }
 
+function PortfolioStatTile({
+  label,
+  value,
+  tone = "neutral",
+  detail,
+}: {
+  label: string;
+  value: string;
+  tone?: "positive" | "negative" | "neutral";
+  detail?: string;
+}) {
+  const toneClass =
+    tone === "positive"
+      ? "text-emerald-400"
+      : tone === "negative"
+        ? "text-red-400"
+        : "text-zinc-100";
+
+  return (
+    <div className="border border-white/[0.07] bg-[#0a0a0a] px-4 py-3">
+      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+        {label}
+      </p>
+      <p className={`mt-2 text-[20px] font-semibold tabular-nums ${toneClass}`}>
+        {value}
+      </p>
+      {detail && <p className="mt-1 text-[12px] text-zinc-500">{detail}</p>}
+    </div>
+  );
+}
+
+function PortfolioPositionsTable({ positions }: { positions: PortfolioPosition[] }) {
+  return (
+    <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+      <div className="grid grid-cols-[1.1fr_0.75fr_0.9fr_0.95fr_0.95fr_1fr_0.85fr] gap-4 border-b border-white/[0.06] px-4 py-2.5 text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+        <span>Asset</span>
+        <span className="text-right">Qty</span>
+        <span className="text-right">Avg Entry</span>
+        <span className="text-right">Market Value</span>
+        <span className="text-right">Cost Basis</span>
+        <span className="text-right">Unrealized P/L</span>
+        <span className="text-right">Alloc</span>
+      </div>
+
+      {positions.length === 0 ? (
+        <div className="px-4 py-10 text-sm text-zinc-500">No open positions.</div>
+      ) : (
+        positions.map((position) => {
+          const unrealized = Number(position.unrealized_pl || 0);
+          const positive = unrealized >= 0;
+
+          return (
+            <div
+              key={`${position.symbol}-${position.side}`}
+              className="grid grid-cols-[1.1fr_0.75fr_0.9fr_0.95fr_0.95fr_1fr_0.85fr] gap-4 border-b border-white/[0.06] px-4 py-3 text-[13px] last:border-b-0"
+            >
+              <div className="min-w-0">
+                <p className="truncate font-medium text-zinc-100">
+                  {position.symbol}
+                </p>
+                <p className="truncate text-[12px] uppercase tracking-[0.12em] text-zinc-500">
+                  {position.side}
+                </p>
+              </div>
+              <span className="text-right tabular-nums text-zinc-300">
+                {position.qty}
+              </span>
+              <span className="text-right tabular-nums text-zinc-300">
+                {fmt(Number(position.avg_entry_price || 0))}
+              </span>
+              <span className="text-right tabular-nums text-zinc-300">
+                {fmtBig(Number(position.market_value || 0))}
+              </span>
+              <span className="text-right tabular-nums text-zinc-300">
+                {fmtBig(Number(position.cost_basis || 0))}
+              </span>
+              <div className="text-right">
+                <p
+                  className={`font-medium tabular-nums ${
+                    positive ? "text-emerald-400" : "text-red-400"
+                  }`}
+                >
+                  {positive ? "+" : ""}
+                  {fmtBig(unrealized)}
+                </p>
+                <p
+                  className={`text-[12px] tabular-nums ${
+                    positive ? "text-emerald-400" : "text-red-400"
+                  }`}
+                >
+                  {position.unrealized_plpc >= 0 ? "+" : ""}
+                  {position.unrealized_plpc.toFixed(2)}%
+                </p>
+              </div>
+              <span className="text-right tabular-nums text-zinc-400">
+                {position.allocation_pct.toFixed(1)}%
+              </span>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function PortfolioOrdersTable({
+  title,
+  orders,
+  emptyLabel,
+}: {
+  title: string;
+  orders: PortfolioOrder[];
+  emptyLabel: string;
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium text-zinc-200">{title}</h3>
+        <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+          {orders.length} total
+        </span>
+      </div>
+      <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+        <div className="grid grid-cols-[0.9fr_0.75fr_0.75fr_0.9fr_0.75fr_0.8fr_1fr] gap-4 border-b border-white/[0.06] px-4 py-2.5 text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+          <span>Symbol</span>
+          <span>Side</span>
+          <span>Type</span>
+          <span>Status</span>
+          <span className="text-right">Qty</span>
+          <span className="text-right">Filled</span>
+          <span className="text-right">Submitted</span>
+        </div>
+
+        {orders.length === 0 ? (
+          <div className="px-4 py-8 text-sm text-zinc-500">{emptyLabel}</div>
+        ) : (
+          orders.map((order) => (
+            <div
+              key={order.id}
+              className="grid grid-cols-[0.9fr_0.75fr_0.75fr_0.9fr_0.75fr_0.8fr_1fr] gap-4 border-b border-white/[0.06] px-4 py-3 text-[13px] last:border-b-0"
+            >
+              <div className="min-w-0">
+                <p className="truncate font-medium text-zinc-100">
+                  {order.symbol}
+                </p>
+                <p className="truncate text-[12px] uppercase tracking-[0.12em] text-zinc-500">
+                  {order.time_in_force}
+                </p>
+              </div>
+              <span
+                className={`uppercase ${
+                  order.side === "buy" ? "text-emerald-400" : "text-red-400"
+                }`}
+              >
+                {order.side}
+              </span>
+              <span className="uppercase text-zinc-300">{order.type}</span>
+              <span className="uppercase text-zinc-400">{order.status}</span>
+              <span className="text-right tabular-nums text-zinc-300">
+                {order.qty}
+              </span>
+              <span className="text-right tabular-nums text-zinc-300">
+                {order.filled_qty}
+              </span>
+              <span className="text-right text-zinc-500">
+                {order.submitted_at
+                  ? new Date(order.submitted_at).toLocaleString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })
+                  : "--"}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
 // ─── Donut for dominance ──────────────────────────────────────────────────────
 
 function DominanceDonut({ btc, eth }: { btc: number; eth: number }) {
@@ -1799,6 +2554,13 @@ export default function CryptoDashboard() {
   const [streaming, setStreaming] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [predictionSearch, setPredictionSearch] = useState("");
+  const [watchlistNews, setWatchlistNews] = useState<NewsItem[]>([]);
+  const [watchlistNewsLoading, setWatchlistNewsLoading] = useState(false);
+  const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(null);
+  const [portfolioRouteLoading, setPortfolioRouteLoading] = useState(false);
+  const [portfolioRouteError, setPortfolioRouteError] = useState<string | null>(
+    null,
+  );
   const [activeTab, setActiveTab] = useState<"gainers" | "losers">("gainers");
   const [marketLeadersTab, setMarketLeadersTab] = useState<"up" | "down">("up");
   const [marketLeadersPage, setMarketLeadersPage] = useState(0);
@@ -1820,6 +2582,8 @@ export default function CryptoDashboard() {
         const pred = await predRes.json();
 
         if (Array.isArray(pred)) setPredictions(pred);
+      } else if (pathname === "/portfolio") {
+        setDashboardUpdatedAt(Date.now());
       } else {
         const [marketsRes, globalRes, predRes, sentRes] = await Promise.all([
           fetch(
@@ -1843,7 +2607,9 @@ export default function CryptoDashboard() {
         if (sent?.tone) setSentiment(sent);
       }
 
-      setDashboardUpdatedAt(Date.now());
+      if (pathname !== "/portfolio") {
+        setDashboardUpdatedAt(Date.now());
+      }
     } catch (e) {
       console.error("Data fetch error:", e);
     } finally {
@@ -1857,6 +2623,44 @@ export default function CryptoDashboard() {
     const timer = setInterval(() => fetchData(true), 60_000);
     return () => clearInterval(timer);
   }, [fetchData]);
+
+  const fetchPortfolioRouteData = useCallback(async (silent = false) => {
+    if (pathname !== "/portfolio") return;
+
+    if (!silent) setPortfolioRouteLoading(true);
+    setPortfolioRouteError(null);
+
+    try {
+      const response = await fetch("/api/alpaca/portfolio");
+      const payload = (await response.json()) as PortfolioData & {
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to load portfolio.");
+      }
+
+      setPortfolioData(payload);
+    } catch (err) {
+      setPortfolioData(null);
+      setPortfolioRouteError(
+        err instanceof Error ? err.message : "Failed to load portfolio.",
+      );
+    } finally {
+      setPortfolioRouteLoading(false);
+    }
+  }, [pathname]);
+
+  useEffect(() => {
+    if (pathname !== "/portfolio") return;
+
+    void fetchPortfolioRouteData();
+    const timer = setInterval(() => {
+      void fetchPortfolioRouteData(true);
+    }, 60_000);
+
+    return () => clearInterval(timer);
+  }, [fetchPortfolioRouteData, pathname]);
 
   useEffect(() => {
     if (showChat) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -2235,6 +3039,17 @@ export default function CryptoDashboard() {
   const bitcoin = coins.find((coin) => coin.id === "bitcoin");
   const ethereum = coins.find((coin) => coin.id === "ethereum");
   const solana = coins.find((coin) => coin.id === "solana");
+  const watchlistAssetIds = [
+    "bitcoin",
+    "ethereum",
+    "solana",
+    "ripple",
+    "dogecoin",
+    "chainlink",
+  ];
+  const watchlistCoins = watchlistAssetIds
+    .map((assetId) => coins.find((coin) => coin.id === assetId))
+    .filter((coin): coin is CoinData => Boolean(coin));
   const get1hChange = (coin: CoinData) =>
     coin.price_change_percentage_1h_in_currency ?? 0;
   const get7dChange = (coin: CoinData) => {
@@ -2295,6 +3110,54 @@ export default function CryptoDashboard() {
     clampedHighVolumePage * marketLeadersPageSize,
     (clampedHighVolumePage + 1) * marketLeadersPageSize,
   );
+  const watchlistMovers = [...watchlistCoins].sort(
+    (a, b) =>
+      Math.abs(b.price_change_percentage_24h) -
+      Math.abs(a.price_change_percentage_24h),
+  );
+  const notablePriceMovers = watchlistMovers.slice(0, 3);
+  const watchlistNewsQuery = watchlistCoins
+    .map((coin) => coin.name)
+    .slice(0, 5)
+    .join(" OR ");
+
+  useEffect(() => {
+    if (pathname !== "/watchlist" || !watchlistNewsQuery) {
+      setWatchlistNews([]);
+      setWatchlistNewsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setWatchlistNewsLoading(true);
+
+      try {
+        const response = await fetch(
+          `/api/news?q=${encodeURIComponent(watchlistNewsQuery)}`,
+        );
+        const payload = (await response.json()) as { items?: NewsItem[] };
+
+        if (!cancelled) {
+          setWatchlistNews(payload.items ?? []);
+        }
+      } catch {
+        if (!cancelled) {
+          setWatchlistNews([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setWatchlistNewsLoading(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, watchlistNewsQuery]);
 
   const movers = activeTab === "gainers" ? gainers : losers;
   const moverRows = movers;
@@ -2569,6 +3432,362 @@ export default function CryptoDashboard() {
                   </div>
                 )}
               </section>
+            ) : pathname === "/watchlist" ? (
+              <div
+                ref={homeSectionRef}
+                className="scroll-mt-24 space-y-6"
+              >
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-sm font-medium text-zinc-200">
+                      My Watchlist
+                    </h2>
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-zinc-500 transition-colors hover:text-zinc-300"
+                    >
+                      Manage Assets
+                    </button>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {watchlistCoins.map((coin) => {
+                      const positive = coin.price_change_percentage_24h >= 0;
+                      return (
+                        <a
+                          key={coin.id}
+                          href={`https://www.coingecko.com/en/coins/${coin.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded-[20px] border border-white/[0.07] bg-[#0a0a0a] p-4 transition-colors hover:border-white/[0.12] hover:bg-[#0d0d0f]"
+                        >
+                          <div className="mb-4 flex items-center gap-3">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={coin.image}
+                              alt={coin.name}
+                              className="h-10 w-10 rounded-full bg-black/30 object-cover"
+                            />
+                            <div className="min-w-0">
+                              <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                {coin.name}
+                              </p>
+                              <p className="truncate text-[12px] uppercase tracking-wide text-zinc-500">
+                                {coin.symbol}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-end justify-between gap-3">
+                            <div>
+                              <p className="text-[18px] font-semibold tabular-nums text-zinc-100">
+                                {fmt(coin.current_price)}
+                              </p>
+                              <p className="mt-1 text-[12px] text-zinc-500">
+                                Mkt cap {fmtBig(coin.market_cap)}
+                              </p>
+                            </div>
+                            <span
+                              className={`inline-flex items-center gap-1 text-[13px] font-medium tabular-nums ${
+                                positive ? "text-emerald-400" : "text-red-400"
+                              }`}
+                            >
+                              {positive ? (
+                                <ArrowUpRight className="h-3 w-3" />
+                              ) : (
+                                <ArrowDownRight className="h-3 w-3" />
+                              )}
+                              {pctCompact(coin.price_change_percentage_24h)}
+                            </span>
+                          </div>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="space-y-2">
+                  <h2 className="text-sm font-medium text-zinc-200">
+                    Watchlist Movers
+                  </h2>
+                  <WatchlistMoversChart coins={watchlistMovers} />
+                </section>
+
+                <section className="space-y-3">
+                  <h2 className="text-sm font-medium text-zinc-200">
+                    Notable Price Movement
+                  </h2>
+                  <div className="grid gap-3 xl:grid-cols-3">
+                    {notablePriceMovers.map((coin) => {
+                      const positive = coin.price_change_percentage_24h >= 0;
+                      return (
+                        <div
+                          key={coin.id}
+                          className="rounded-[20px] border border-white/[0.07] bg-[#0a0a0a] p-4"
+                        >
+                          <div className="mb-3 flex items-center gap-3">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={coin.image}
+                              alt={coin.name}
+                              className="h-10 w-10 rounded-full bg-black/30 object-cover"
+                            />
+                            <div className="min-w-0">
+                              <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                {coin.name}
+                              </p>
+                              <p className="truncate text-[12px] uppercase tracking-wide text-zinc-500">
+                                {coin.symbol}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-[13px] leading-6 text-zinc-400">
+                            {coin.name} is trading at {fmt(coin.current_price)} after moving{" "}
+                            <span
+                              className={positive ? "text-emerald-400" : "text-red-400"}
+                            >
+                              {positive ? "+" : "-"}
+                              {pctCompact(coin.price_change_percentage_24h)}
+                            </span>{" "}
+                            over the last day, with volume near {fmtBig(coin.total_volume)} and a
+                            7-day move of {pctCompact(get7dChange(coin))}.
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-sm font-medium text-zinc-200">
+                      Watchlist News
+                    </h2>
+                    {watchlistNewsLoading && (
+                      <span className="text-xs text-zinc-500">Refreshing...</span>
+                    )}
+                  </div>
+                  <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                    {watchlistNewsLoading && watchlistNews.length === 0 ? (
+                      <div className="px-4 py-8 text-sm text-zinc-500">
+                        Loading watchlist headlines...
+                      </div>
+                    ) : watchlistNews.length === 0 ? (
+                      <div className="px-4 py-8 text-sm text-zinc-500">
+                        No watchlist headlines available right now.
+                      </div>
+                    ) : (
+                      watchlistNews.map((item, index) => (
+                        <a
+                          key={`${item.link}-${index}`}
+                          href={item.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block border-b border-white/[0.06] px-4 py-4 last:border-b-0 transition-colors hover:bg-white/[0.02]"
+                        >
+                          <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                            {item.source && <span>{item.source}</span>}
+                            {item.publishedAt && <span>{item.publishedAt}</span>}
+                          </div>
+                          <p className="text-[14px] leading-6 text-zinc-200">
+                            {item.title}
+                          </p>
+                        </a>
+                      ))
+                    )}
+                  </div>
+                </section>
+              </div>
+            ) : pathname === "/portfolio" ? (
+              <div ref={homeSectionRef} className="scroll-mt-24 space-y-6">
+                <section className="space-y-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <h1 className="text-[22px] font-semibold text-zinc-100">
+                        Portfolio
+                      </h1>
+                      <p className="mt-1 text-sm text-zinc-500">
+                        Live Alpaca account data from your configured API credentials.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                        {portfolioData
+                          ? formatRelativeUpdate(
+                              new Date(portfolioData.fetched_at).getTime(),
+                            )
+                          : "Waiting for account data"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void fetchPortfolioRouteData();
+                        }}
+                        disabled={portfolioRouteLoading}
+                        className="inline-flex items-center gap-2 border border-white/[0.08] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-300 transition-colors hover:border-white/[0.12] hover:text-white disabled:cursor-not-allowed disabled:text-zinc-600"
+                      >
+                        <RefreshCw
+                          className={`h-3.5 w-3.5 ${
+                            portfolioRouteLoading ? "animate-spin" : ""
+                          }`}
+                        />
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  {portfolioRouteError ? (
+                    <div className="border border-red-500/20 bg-red-500/5 px-4 py-4 text-sm text-red-300">
+                      {portfolioRouteError}
+                    </div>
+                  ) : portfolioRouteLoading && !portfolioData ? (
+                    <div className="flex items-center gap-3 border border-white/[0.07] bg-[#0a0a0a] px-4 py-8 text-sm text-zinc-500">
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Loading Alpaca account data…
+                    </div>
+                  ) : portfolioData ? (
+                    <>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        <PortfolioStatTile
+                          label="Equity"
+                          value={fmtBig(portfolioData.summary.equity)}
+                          detail={`Prev close ${fmtBig(
+                            portfolioData.summary.last_equity,
+                          )}`}
+                        />
+                        <PortfolioStatTile
+                          label="Cash"
+                          value={fmtBig(portfolioData.summary.cash)}
+                          detail={`Buying power ${fmtBig(
+                            portfolioData.summary.buying_power,
+                          )}`}
+                        />
+                        <PortfolioStatTile
+                          label="Day P/L"
+                          value={`${
+                            portfolioData.summary.day_pnl >= 0 ? "+" : ""
+                          }${fmtBig(portfolioData.summary.day_pnl)}`}
+                          tone={
+                            portfolioData.summary.day_pnl >= 0
+                              ? "positive"
+                              : "negative"
+                          }
+                          detail={`${
+                            portfolioData.summary.day_pnl_pct >= 0 ? "+" : ""
+                          }${portfolioData.summary.day_pnl_pct.toFixed(2)}%`}
+                        />
+                        <PortfolioStatTile
+                          label="Unrealized P/L"
+                          value={`${
+                            portfolioData.summary.unrealized_pnl_total >= 0
+                              ? "+"
+                              : ""
+                          }${fmtBig(portfolioData.summary.unrealized_pnl_total)}`}
+                          tone={
+                            portfolioData.summary.unrealized_pnl_total >= 0
+                              ? "positive"
+                              : "negative"
+                          }
+                          detail={`${
+                            portfolioData.summary.unrealized_pnl_pct >= 0
+                              ? "+"
+                              : ""
+                          }${portfolioData.summary.unrealized_pnl_pct.toFixed(
+                            2,
+                          )}%`}
+                        />
+                        <PortfolioStatTile
+                          label="Open Positions"
+                          value={String(portfolioData.summary.positions_count)}
+                          detail={`Pending orders ${portfolioData.summary.pending_orders_count}`}
+                        />
+                        <PortfolioStatTile
+                          label="Filled Orders"
+                          value={String(portfolioData.summary.filled_orders_count)}
+                          detail={`Partially filled ${portfolioData.summary.partially_filled_orders_count}`}
+                        />
+                      </div>
+
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.85fr)]">
+                        <section className="space-y-2">
+                          <h2 className="text-sm font-medium text-zinc-200">
+                            Open Positions
+                          </h2>
+                          <PortfolioPositionsTable positions={portfolioData.positions} />
+                        </section>
+
+                        <div className="space-y-4">
+                          <section className="space-y-2">
+                            <h2 className="text-sm font-medium text-zinc-200">
+                              Account Details
+                            </h2>
+                            <div className="border-y border-white/[0.07] bg-[#0a0a0a]">
+                              <div className="grid gap-px bg-white/[0.05] md:grid-cols-2">
+                                <div className="bg-[#0a0a0a] px-4 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                    Account
+                                  </p>
+                                  <p className="mt-2 text-sm font-medium text-zinc-100">
+                                    {portfolioData.account.account_number
+                                      ? `••••${String(
+                                          portfolioData.account.account_number,
+                                        ).slice(-4)}`
+                                      : "--"}
+                                  </p>
+                                </div>
+                                <div className="bg-[#0a0a0a] px-4 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                    Status
+                                  </p>
+                                  <p className="mt-2 text-sm font-medium uppercase text-zinc-100">
+                                    {portfolioData.account.status || "active"}
+                                  </p>
+                                </div>
+                                <div className="bg-[#0a0a0a] px-4 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                    Currency
+                                  </p>
+                                  <p className="mt-2 text-sm font-medium text-zinc-100">
+                                    {portfolioData.account.currency || "USD"}
+                                  </p>
+                                </div>
+                                <div className="bg-[#0a0a0a] px-4 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                    Last Sync
+                                  </p>
+                                  <p className="mt-2 text-sm font-medium text-zinc-100">
+                                    {new Date(portfolioData.fetched_at).toLocaleString(
+                                      "en-US",
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </section>
+
+                          <PortfolioCard data={portfolioData} />
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <PortfolioOrdersTable
+                          title="Pending Orders"
+                          orders={portfolioData.orders.pending}
+                          emptyLabel="No pending orders."
+                        />
+                        <PortfolioOrdersTable
+                          title="Partially Filled Orders"
+                          orders={portfolioData.orders.partially_filled}
+                          emptyLabel="No partially filled orders."
+                        />
+                        <PortfolioOrdersTable
+                          title="Recent Filled Orders"
+                          orders={portfolioData.orders.filled}
+                          emptyLabel="No recent filled orders."
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                </section>
+              </div>
             ) : (
             <div
               ref={homeSectionRef}
