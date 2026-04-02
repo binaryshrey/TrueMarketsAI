@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
       {
         headers: { Accept: "application/json" },
         next: { revalidate: 120 },
-      }
+      },
     );
 
     if (!response.ok) {
@@ -110,42 +110,52 @@ export async function GET(req: NextRequest) {
     const markets = await Promise.all(
       selectedEvents.map(async (e) => {
         const firstMarket = e.markets?.[0];
-        const outcomes =
-          parseField<string[]>(firstMarket?.outcomes) ?? ["Yes", "No"];
-        const outcomePrices =
-          parseField<string[]>(firstMarket?.outcomePrices) ?? ["0.5", "0.5"];
-        const clobTokenIds = parseField<string[]>(firstMarket?.clobTokenIds) ?? [];
+        const outcomes = parseField<string[]>(firstMarket?.outcomes) ?? [
+          "Yes",
+          "No",
+        ];
+        const outcomePrices = parseField<string[]>(
+          firstMarket?.outcomePrices,
+        ) ?? ["0.5", "0.5"];
+        const clobTokenIds =
+          parseField<string[]>(firstMarket?.clobTokenIds) ?? [];
 
         const discussionOptionsRaw = await Promise.all(
-          (e.markets ?? []).slice(0, mode === "grid" ? 40 : 8).map(async (market) => {
-            const marketQuestion = market.question?.trim();
-            if (!marketQuestion) return null;
+          (e.markets ?? [])
+            .slice(0, mode === "grid" ? 40 : 8)
+            .map(async (market) => {
+              const marketQuestion = market.question?.trim();
+              if (!marketQuestion) return null;
 
-            const marketPrices =
-              parseField<string[]>(market.outcomePrices) ?? ["0.5", "0.5"];
-            const marketTokenIds =
-              parseField<string[]>(market.clobTokenIds) ?? [];
-            const yesTokenId = marketTokenIds[0];
+              const marketPrices = parseField<string[]>(
+                market.outcomePrices,
+              ) ?? ["0.5", "0.5"];
+              const marketTokenIds =
+                parseField<string[]>(market.clobTokenIds) ?? [];
+              const yesTokenId = marketTokenIds[0];
 
-            let history: PriceHistoryPoint[] = [];
-            if (yesTokenId && mode !== "grid") {
-              try {
-                history = await fetchHistory(yesTokenId);
-              } catch {
-                history = [];
+              let history: PriceHistoryPoint[] = [];
+              if (yesTokenId && mode !== "grid") {
+                try {
+                  history = await fetchHistory(yesTokenId);
+                } catch {
+                  history = [];
+                }
               }
-            }
 
-            return {
-              label: marketQuestion,
-              price: Number.parseFloat(marketPrices[0] ?? "0"),
-              tokenId: yesTokenId ?? null,
-              history,
-            } satisfies DiscussionOption;
-          }),
+              return {
+                label: marketQuestion,
+                price: Number.parseFloat(marketPrices[0] ?? "0"),
+                tokenId: yesTokenId ?? null,
+                history,
+              } satisfies DiscussionOption;
+            }),
         );
         const discussionOptionsBase = discussionOptionsRaw.filter(
-          (option): option is DiscussionOption => option !== null,
+          (
+            option,
+          ): option is Exclude<(typeof discussionOptionsRaw)[number], null> =>
+            option !== null,
         );
         const discussionOptions =
           mode === "grid"
@@ -223,7 +233,7 @@ export async function GET(req: NextRequest) {
     console.error("Prediction market API error:", error);
     return NextResponse.json(
       { error: "Failed to fetch prediction markets" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

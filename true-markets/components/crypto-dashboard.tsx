@@ -1001,15 +1001,6 @@ function formatWatchlistAxisLabel(
         month: "short",
         day: "numeric",
       });
-    case "YTD":
-    case "1Y":
-      return date.toLocaleDateString("en-US", {
-        month: "short",
-      });
-    case "5Y":
-      return date.toLocaleDateString("en-US", {
-        year: "numeric",
-      });
     default:
       return "";
   }
@@ -1049,7 +1040,7 @@ function formatWatchlistHoverLabel(
         day: "numeric",
       });
     case "1M":
-    case "5Y":
+    case "6M":
       return date.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
