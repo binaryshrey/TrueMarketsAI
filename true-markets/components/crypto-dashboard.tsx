@@ -5236,7 +5236,87 @@ export default function CryptoDashboard() {
     { label: "Alerts", href: "/alerts" },
     { label: "Portfolio", href: "/portfolio" },
     { label: "Risk Analysis", href: "/risk-analysis" },
+    { label: "MCP", href: "/mcp" },
   ] as const;
+
+  const mcpStatCards = [
+    { label: "MCP Tools", value: "26", detail: "Data, actions, intelligence" },
+    {
+      label: "CLI Commands",
+      value: "34",
+      detail: "tm portfolio, tm pnl, tm order",
+    },
+    {
+      label: "Median Latency",
+      value: "182ms",
+      detail: "Simulated MCP round-trip",
+    },
+    {
+      label: "Success Rate",
+      value: "99.2%",
+      detail: "Read + execution requests",
+    },
+  ] as const;
+  const mcpCoverageBars = [
+    { label: "Account + Portfolio", value: 94 },
+    { label: "Market Data", value: 97 },
+    { label: "Order Execution", value: 89 },
+    { label: "Risk + Allocation", value: 92 },
+    { label: "AI Recommendations", value: 96 },
+  ] as const;
+  const mcpCapabilityMatrix = [
+    {
+      capability: "Portfolio Snapshot",
+      mcpTool: "get_portfolio",
+      cli: "tm portfolio",
+      status: "Ready",
+      notes: "Real-time equity, cash, and allocations",
+    },
+    {
+      capability: "PnL + Drawdown",
+      mcpTool: "get_pnl",
+      cli: "tm pnl --window 30d",
+      status: "Ready",
+      notes: "Daily and cumulative PnL attribution",
+    },
+    {
+      capability: "Order Placement",
+      mcpTool: "place_order",
+      cli: "tm order buy BTC 100",
+      status: "Guardrailed",
+      notes: "Approval + scoped trade permissions",
+    },
+    {
+      capability: "Rebalance",
+      mcpTool: "rebalance_portfolio",
+      cli: "tm rebalance --target model_a",
+      status: "Beta",
+      notes: "Allocation-aware smart routing",
+    },
+    {
+      capability: "Risk Analysis",
+      mcpTool: "optimize_allocation",
+      cli: "tm risk optimize",
+      status: "Ready",
+      notes: "Volatility, drawdown, Sharpe-driven",
+    },
+    {
+      capability: "AI Strategy Suggestions",
+      mcpTool: "suggest_strategy",
+      cli: "tm strategy suggest",
+      status: "Ready",
+      notes: "Scenario-aware recommendation layer",
+    },
+  ] as const;
+  const mcpLatencySeries = [430, 320, 290, 260, 230, 210, 205, 198, 192, 188];
+  const mcpLatencyPath = buildLinePathWithBounds(
+    mcpLatencySeries,
+    150,
+    460,
+    420,
+    130,
+    8,
+  );
 
   return (
     <div className="min-h-screen bg-[#000000] text-white">
@@ -7108,6 +7188,189 @@ export default function CryptoDashboard() {
                       ) : null}
                     </>
                   )}
+                </section>
+              </div>
+            ) : pathname === "/mcp" ? (
+              <div ref={homeSectionRef} className="scroll-mt-24 space-y-6">
+                <section className="space-y-3">
+                  <div className="space-y-2">
+                    <div>
+                      <h1 className="text-[22px] font-semibold text-zinc-100">
+                        TrueMarkets MCP Capabilities
+                      </h1>
+                      <p className="mt-1 text-sm text-zinc-500">
+                        This page demonstrates what a TrueMarkets MCP + CLI can
+                        expose without executing live brokerage actions.
+                      </p>
+                    </div>
+                    <a
+                      href="https://zerodha.com/z-connect/featured/connect-your-zerodha-account-to-ai-assistants-with-kite-mcp"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex w-fit items-center gap-1 rounded-md border border-white/[0.12] bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 transition-colors hover:border-white/[0.2] hover:text-zinc-100"
+                    >
+                      Zerodha MCP reference
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    {mcpStatCards.map((card) => (
+                      <div
+                        key={card.label}
+                        className="rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] px-4 py-3.5"
+                      >
+                        <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                          {card.label}
+                        </p>
+                        <p className="mt-1 text-[24px] font-semibold tabular-nums text-zinc-100">
+                          {card.value}
+                        </p>
+                        <p className="mt-1 text-[12px] text-zinc-500">
+                          {card.detail}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="grid gap-3 xl:grid-cols-2">
+                  <div className="rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] p-4">
+                    <h2 className="text-sm font-medium text-zinc-200">
+                      Capability Coverage
+                    </h2>
+                    <div className="mt-3 space-y-2.5">
+                      {mcpCoverageBars.map((item) => (
+                        <div key={item.label}>
+                          <div className="mb-1 flex items-center justify-between gap-3">
+                            <p className="text-[12px] text-zinc-300">
+                              {item.label}
+                            </p>
+                            <p className="text-[12px] tabular-nums text-zinc-500">
+                              {item.value}%
+                            </p>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-[#4f7cff] to-[#23d18b]"
+                              style={{ width: `${item.value}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] p-4">
+                    <h2 className="text-sm font-medium text-zinc-200">
+                      MCP Latency Trend (Simulated)
+                    </h2>
+                    <div className="mt-3 overflow-hidden rounded-lg border border-white/[0.06] bg-black/30 px-2 py-3">
+                      <svg
+                        viewBox="0 0 420 130"
+                        className="h-[140px] w-full"
+                        preserveAspectRatio="none"
+                      >
+                        <defs>
+                          <linearGradient
+                            id="mcpLatencyStroke"
+                            x1="0"
+                            y1="0"
+                            x2="1"
+                            y2="0"
+                          >
+                            <stop offset="0%" stopColor="#4f7cff" />
+                            <stop offset="100%" stopColor="#23d18b" />
+                          </linearGradient>
+                        </defs>
+                        <path
+                          d={mcpLatencyPath}
+                          fill="none"
+                          stroke="url(#mcpLatencyStroke)"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </div>
+                    <p className="mt-2 text-[12px] text-zinc-500">
+                      Trend shows optimization from ~430ms to sub-200ms tool
+                      calls via caching and scoped context payloads.
+                    </p>
+                  </div>
+                </section>
+
+                <section className="space-y-2">
+                  <h2 className="text-sm font-medium text-zinc-200">
+                    MCP + CLI Capability Matrix
+                  </h2>
+                  <div className="overflow-hidden border-y border-white/[0.07] bg-[#0a0a0a]">
+                    <div className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_1.2fr] gap-4 border-b border-white/[0.06] px-4 py-2.5 text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                      <span>Capability</span>
+                      <span>MCP Tool</span>
+                      <span>CLI</span>
+                      <span>Status</span>
+                      <span>Notes</span>
+                    </div>
+                    {mcpCapabilityMatrix.map((row) => (
+                      <div
+                        key={`${row.capability}-${row.mcpTool}`}
+                        className="grid grid-cols-[1.2fr_1fr_1fr_0.75fr_1.2fr] gap-4 border-b border-white/[0.06] px-4 py-3 text-[13px] last:border-b-0"
+                      >
+                        <span className="text-zinc-200">{row.capability}</span>
+                        <span className="font-mono text-zinc-400">
+                          {row.mcpTool}
+                        </span>
+                        <span className="font-mono text-zinc-400">
+                          {row.cli}
+                        </span>
+                        <span className="text-zinc-300">{row.status}</span>
+                        <span className="text-zinc-500">{row.notes}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="rounded-[18px] border border-white/[0.07] bg-[#0a0a0a] p-4">
+                  <h2 className="text-sm font-medium text-zinc-200">
+                    CLI + MCP Positioning
+                  </h2>
+                  <p className="mt-2 text-[13px] leading-6 text-zinc-400">
+                    TrueMarkets can mirror the Zerodha-style MCP blueprint while
+                    extending it with AI-native tools. CLI and MCP should share
+                    one backend so human operators and AI agents use identical
+                    primitives.
+                  </p>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                        Example CLI
+                      </p>
+                      <p className="mt-1 font-mono text-[12px] text-zinc-300">
+                        tm portfolio
+                      </p>
+                      <p className="mt-1 font-mono text-[12px] text-zinc-300">
+                        tm pnl --window 30d
+                      </p>
+                      <p className="mt-1 font-mono text-[12px] text-zinc-300">
+                        tm order buy BTC 100
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+                      <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                        Example MCP Prompts
+                      </p>
+                      <p className="mt-1 text-[12px] text-zinc-300">
+                        What is my portfolio PnL today?
+                      </p>
+                      <p className="mt-1 text-[12px] text-zinc-300">
+                        Rebalance me to reduce volatility by 10%
+                      </p>
+                      <p className="mt-1 text-[12px] text-zinc-300">
+                        Suggest a hedge across BTC/ETH/SOL
+                      </p>
+                    </div>
+                  </div>
                 </section>
               </div>
             ) : pathname === "/trending" ? (
