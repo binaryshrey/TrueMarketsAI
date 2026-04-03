@@ -2388,10 +2388,39 @@ function CoinDetailCard({ meta }: { meta: CoinCardMeta }) {
 
 function PortfolioCard({ data }: { data: PortfolioData }) {
   const s = data.summary;
-  const dayPos = s.day_pnl >= 0;
-  const unrlPos = s.unrealized_pnl_total >= 0;
 
   const chip = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+  const positionChartCards = data.positions.slice(0, 6).map((position) => {
+    const qty = Number(position.qty || 0);
+    const avgEntry = Number(position.avg_entry_price || 0);
+    const marketValue = Number(position.market_value || 0);
+    const currentPrice = qty > 0 ? marketValue / qty : avgEntry;
+    const deltaPct = Number(position.unrealized_plpc || 0);
+    const positive = deltaPct >= 0;
+
+    const start = avgEntry > 0 ? avgEntry : currentPrice;
+    const end =
+      Number.isFinite(currentPrice) && currentPrice > 0 ? currentPrice : start;
+
+    const sparkline =
+      Number.isFinite(start) && Number.isFinite(end) && start > 0 && end > 0
+        ? Array.from({ length: 24 }, (_, index) => {
+            const t = index / 23;
+            const base = start + (end - start) * t;
+            const wave = Math.sin(t * Math.PI * 4) * start * 0.01;
+            return Math.max(0.000001, base + wave * (positive ? 1 : -1));
+          })
+        : [];
+
+    return {
+      id: `${position.symbol}-${position.side}`,
+      label: position.symbol,
+      currentPrice,
+      deltaPct,
+      positive,
+      sparkline,
+    };
+  });
 
   return (
     <div className={`w-full overflow-hidden ${CARD_SHELL_CLASS}`}>
@@ -2408,43 +2437,6 @@ function PortfolioCard({ data }: { data: PortfolioData }) {
           <span className="text-sm text-zinc-500">
             {data.account.status || "active"} · {data.account.currency || "USD"}
           </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-white/[0.04]">
-        <div className="bg-[#0a0a0a] px-3 py-2.5">
-          <p className="text-sm text-zinc-600">Equity</p>
-          <p className="text-[12px] font-semibold text-zinc-200 tabular-nums">
-            {fmtBig(s.equity)}
-          </p>
-        </div>
-        <div className="bg-[#0a0a0a] px-3 py-2.5">
-          <p className="text-sm text-zinc-600">Cash</p>
-          <p className="text-[12px] font-semibold text-zinc-200 tabular-nums">
-            {fmtBig(s.cash)}
-          </p>
-        </div>
-        <div className="bg-[#0a0a0a] px-3 py-2.5">
-          <p className="text-sm text-zinc-600">Day P/L</p>
-          <p
-            className={`text-[12px] font-semibold tabular-nums ${
-              dayPos ? "text-emerald-400" : "text-red-400"
-            }`}
-          >
-            {dayPos ? "+" : ""}
-            {fmtBig(s.day_pnl)} ({chip(s.day_pnl_pct)})
-          </p>
-        </div>
-        <div className="bg-[#0a0a0a] px-3 py-2.5">
-          <p className="text-sm text-zinc-600">Unrealized P/L</p>
-          <p
-            className={`text-[12px] font-semibold tabular-nums ${
-              unrlPos ? "text-emerald-400" : "text-red-400"
-            }`}
-          >
-            {unrlPos ? "+" : ""}
-            {fmtBig(s.unrealized_pnl_total)} ({chip(s.unrealized_pnl_pct)})
-          </p>
         </div>
       </div>
 
@@ -2492,6 +2484,53 @@ function PortfolioCard({ data }: { data: PortfolioData }) {
           </div>
         )}
       </div>
+
+      {positionChartCards.length > 0 && (
+        <div className="px-3 py-3 border-t border-white/5">
+          <p className="text-sm text-zinc-600 mb-2">Position Charts</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+            {positionChartCards.map((asset) => (
+              <div
+                key={asset.id}
+                className="group bg-[#0a0a0a] border border-white/[0.07] rounded-xl hover:border-white/[0.14] hover:bg-[#111] transition-all overflow-hidden"
+              >
+                <div className="px-3.5 pt-3.5 pb-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-white truncate leading-tight">
+                        {asset.label}
+                      </p>
+                      <p className="text-sm text-zinc-500 mt-1 tabular-nums">
+                        {fmt(asset.currentPrice)}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span
+                        className={`text-sm font-semibold flex items-center justify-end gap-0.5 ${
+                          asset.positive ? "text-emerald-400" : "text-red-400"
+                        }`}
+                      >
+                        {asset.positive ? (
+                          <ArrowUpRight className="w-3 h-3" />
+                        ) : (
+                          <ArrowDownRight className="w-3 h-3" />
+                        )}
+                        {Math.abs(asset.deltaPct).toFixed(2)}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                {asset.sparkline.length > 1 && (
+                  <CardSparkline
+                    data={asset.sparkline}
+                    positive={asset.positive}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-white/[0.04] border-t border-white/5">
         <div className="bg-[#0a0a0a] px-3 py-2.5">
@@ -2702,6 +2741,123 @@ function PortfolioOrdersTable({
         )}
       </div>
     </section>
+  );
+}
+
+interface PortfolioAllocationSlice {
+  label: string;
+  value: number;
+  pct: number;
+  color: string;
+}
+
+const PORTFOLIO_ALLOCATION_COLORS = [
+  "#6475f3",
+  "#5ad0c8",
+  "#8b5cf6",
+  "#facc15",
+  "#f97316",
+  "#94a3b8",
+];
+
+function buildPortfolioAllocationSlices(
+  portfolioData: PortfolioData,
+): PortfolioAllocationSlice[] {
+  const sortedPositions = portfolioData.positions
+    .map((position) => ({
+      label: position.symbol.toUpperCase(),
+      value: Math.abs(Number(position.market_value || 0)),
+    }))
+    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  const baseSlices = sortedPositions.slice(0, 3);
+  const otherPositionsValue = sortedPositions
+    .slice(3)
+    .reduce((sum, entry) => sum + entry.value, 0);
+
+  if (otherPositionsValue > 0) {
+    baseSlices.push({ label: "Other", value: otherPositionsValue });
+  }
+
+  if (portfolioData.summary.cash > 0) {
+    baseSlices.push({ label: "Cash", value: portfolioData.summary.cash });
+  }
+
+  if (baseSlices.length === 0) {
+    const fallbackValue = Math.max(portfolioData.summary.equity, 0);
+    if (fallbackValue <= 0) return [];
+
+    baseSlices.push({ label: "Portfolio", value: fallbackValue });
+  }
+
+  const total = baseSlices.reduce((sum, slice) => sum + slice.value, 0);
+
+  return baseSlices.map((slice, index) => ({
+    ...slice,
+    pct: total > 0 ? (slice.value / total) * 100 : 0,
+    color:
+      PORTFOLIO_ALLOCATION_COLORS[index % PORTFOLIO_ALLOCATION_COLORS.length],
+  }));
+}
+
+function PortfolioAllocationDonut({
+  slices,
+  total,
+}: {
+  slices: PortfolioAllocationSlice[];
+  total: number;
+}) {
+  if (slices.length === 0) {
+    return (
+      <div className="flex h-[140px] w-[140px] items-center justify-center rounded-full border border-white/[0.08] text-[11px] text-zinc-500">
+        No allocation data
+      </div>
+    );
+  }
+
+  const options = {
+    chart: {
+      type: "donut" as const,
+      background: "transparent",
+      animations: { enabled: false },
+    },
+    colors: slices.map((slice) => slice.color),
+    labels: slices.map((slice) => slice.label),
+    legend: { show: false },
+    dataLabels: { enabled: false },
+    stroke: { width: 0 },
+    tooltip: { enabled: false },
+    plotOptions: {
+      pie: {
+        donut: {
+          size: "68%",
+          labels: {
+            show: true,
+            name: { show: false },
+            value: { show: false },
+            total: {
+              show: true,
+              showAlways: true,
+              label: "Total",
+              color: "#a1a1aa",
+              fontSize: "11px",
+              formatter: () => fmtBig(total),
+            },
+          },
+        },
+      },
+    },
+  };
+
+  return (
+    <ReactApexChart
+      type="donut"
+      series={slices.map((slice) => Number(slice.value.toFixed(2)))}
+      options={options}
+      width={140}
+      height={140}
+    />
   );
 }
 
@@ -4128,6 +4284,18 @@ export default function CryptoDashboard() {
     },
   ].filter((item): item is MarketSummaryItem => Boolean(item));
 
+  const portfolioAllocationSlices = portfolioData
+    ? buildPortfolioAllocationSlices(portfolioData)
+    : [];
+  const portfolioNetWorthChange = portfolioData?.summary.day_pnl ?? 0;
+  const portfolioNetWorthChangePct = portfolioData?.summary.day_pnl_pct ?? 0;
+  const portfolioLiabilities = portfolioData
+    ? Math.max(
+        0,
+        portfolioData.summary.buying_power - portfolioData.summary.equity,
+      )
+    : 0;
+
   // ── Skeleton ──
   if (loading) {
     return (
@@ -4147,6 +4315,7 @@ export default function CryptoDashboard() {
     { label: "Watchlist", href: "/watchlist" },
     { label: "Alerts", href: "/alerts" },
     { label: "Portfolio", href: "/portfolio" },
+    { label: "Risk Analysis", href: "/risk-analysis" },
   ] as const;
 
   return (
@@ -5001,6 +5170,15 @@ export default function CryptoDashboard() {
                             />
                             Refresh
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              toast("Coming Soon");
+                            }}
+                            className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/60 bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+                          >
+                            Deposit
+                          </button>
                         </div>
                       </div>
 
@@ -5015,7 +5193,196 @@ export default function CryptoDashboard() {
                         </div>
                       ) : portfolioData ? (
                         <>
-                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+                            <section
+                              className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="text-xs font-medium text-zinc-500">
+                                    Net Worth
+                                  </p>
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className="text-[28px] font-semibold leading-none tracking-tight text-zinc-100 tabular-nums md:text-[32px]">
+                                      $
+                                      {Math.round(
+                                        portfolioData.summary.equity,
+                                      ).toLocaleString("en-US")}
+                                    </p>
+                                    <p
+                                      className={`text-[16px] font-medium leading-none tabular-nums md:text-[18px] ${
+                                        portfolioNetWorthChange >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {portfolioNetWorthChange >= 0 ? "+" : "-"}
+                                      $
+                                      {Math.abs(
+                                        Math.round(portfolioNetWorthChange),
+                                      ).toLocaleString("en-US")}
+                                    </p>
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 text-[13px] font-medium leading-none tabular-nums md:text-[14px] ${
+                                        portfolioNetWorthChangePct >= 0
+                                          ? "bg-emerald-500/12 text-emerald-400"
+                                          : "bg-red-500/12 text-red-400"
+                                      }`}
+                                    >
+                                      {portfolioNetWorthChangePct >= 0
+                                        ? "+"
+                                        : "-"}
+                                      {Math.abs(
+                                        portfolioNetWorthChangePct,
+                                      ).toFixed(2)}
+                                      %
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void fetchPortfolioRouteData();
+                                  }}
+                                  disabled={portfolioRouteLoading}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.02] text-zinc-400 transition-colors hover:border-white/[0.2] hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-600"
+                                  aria-label="Refresh portfolio overview"
+                                >
+                                  <RefreshCw
+                                    className={`h-3.5 w-3.5 ${
+                                      portfolioRouteLoading
+                                        ? "animate-spin"
+                                        : ""
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+
+                              <div className="mt-3 grid gap-2.5 md:grid-cols-3">
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Claimable
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    $
+                                    {Math.round(
+                                      portfolioData.summary.cash,
+                                    ).toLocaleString("en-US")}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Total Assets
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    $
+                                    {Math.round(
+                                      portfolioData.summary.equity,
+                                    ).toLocaleString("en-US")}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Total Liabilities
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    $
+                                    {Math.round(
+                                      portfolioLiabilities,
+                                    ).toLocaleString("en-US")}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3">
+                                <p className="text-xs font-medium text-zinc-300">
+                                  Risk Profile
+                                </p>
+                                <div className="mt-1.5 overflow-hidden rounded-md border border-white/[0.08] bg-white/[0.02]">
+                                  <div className="flex h-3.5 w-full">
+                                    {portfolioAllocationSlices.map((slice) => (
+                                      <span
+                                        key={`risk-${slice.label}`}
+                                        className="h-full"
+                                        style={{
+                                          width: `${slice.pct}%`,
+                                          backgroundColor: slice.color,
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                                  {portfolioAllocationSlices.map((slice) => (
+                                    <div
+                                      key={`risk-legend-${slice.label}`}
+                                      className="min-w-[70px]"
+                                    >
+                                      <div className="flex items-center gap-1">
+                                        <span
+                                          className="h-1.5 w-1.5 rounded-full"
+                                          style={{
+                                            backgroundColor: slice.color,
+                                          }}
+                                        />
+                                        <span className="text-[11px] text-zinc-200">
+                                          {slice.label}
+                                        </span>
+                                      </div>
+                                      <p className="pl-2.5 text-[11px] tabular-nums text-zinc-500">
+                                        {slice.pct.toFixed(2)}%
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </section>
+
+                            <section
+                              className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                            >
+                              <h2 className="text-[16px] font-semibold text-zinc-100 md:text-[18px]">
+                                Portfolio Allocation
+                              </h2>
+
+                              <div className="mt-2.5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="mx-auto shrink-0 md:mx-0">
+                                  <PortfolioAllocationDonut
+                                    slices={portfolioAllocationSlices}
+                                    total={portfolioData.summary.equity}
+                                  />
+                                </div>
+
+                                <div className="space-y-1 md:min-w-[150px]">
+                                  {portfolioAllocationSlices.map((slice) => (
+                                    <div
+                                      key={`allocation-${slice.label}`}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-zinc-200">
+                                        <span
+                                          className="h-2 w-2 rounded-full"
+                                          style={{
+                                            backgroundColor: slice.color,
+                                          }}
+                                        />
+                                        <span className="truncate">
+                                          {slice.label}
+                                        </span>
+                                      </span>
+                                      <span className="text-[12px] font-semibold tabular-nums text-zinc-100">
+                                        {slice.pct.toFixed(2)}%
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </section>
+                          </div>
+
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                             <PortfolioStatTile
                               label="Equity"
                               value={fmtBig(portfolioData.summary.equity)}
@@ -5080,9 +5447,29 @@ export default function CryptoDashboard() {
                               )}
                               detail={`Partially filled ${portfolioData.summary.partially_filled_orders_count}`}
                             />
+                            <PortfolioStatTile
+                              label="Account Number"
+                              value={
+                                portfolioData.account.account_number
+                                  ? `••••${String(
+                                      portfolioData.account.account_number,
+                                    ).slice(-4)}`
+                                  : "--"
+                              }
+                            />
+                            <PortfolioStatTile
+                              label="Account Status"
+                              value={
+                                portfolioData.account.status
+                                  ? portfolioData.account.status.toUpperCase()
+                                  : "ACTIVE"
+                              }
+                            />
                           </div>
 
-                          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.85fr)]">
+                          <div className="space-y-4">
+                            <PortfolioCard data={portfolioData} />
+
                             <section className="space-y-2">
                               <h2 className="text-sm font-medium text-zinc-200">
                                 Open Positions
@@ -5091,63 +5478,6 @@ export default function CryptoDashboard() {
                                 positions={portfolioData.positions}
                               />
                             </section>
-
-                            <div className="space-y-4">
-                              <section className="space-y-2">
-                                <h2 className="text-sm font-medium text-zinc-200">
-                                  Account Details
-                                </h2>
-                                <div
-                                  className={`overflow-hidden ${CARD_SHELL_CLASS}`}
-                                >
-                                  <div className="grid gap-px bg-white/[0.05] md:grid-cols-2">
-                                    <div className="bg-[#0a0a0a] px-4 py-3">
-                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                        Account
-                                      </p>
-                                      <p className="mt-2 text-sm font-medium text-zinc-100">
-                                        {portfolioData.account.account_number
-                                          ? `••••${String(
-                                              portfolioData.account
-                                                .account_number,
-                                            ).slice(-4)}`
-                                          : "--"}
-                                      </p>
-                                    </div>
-                                    <div className="bg-[#0a0a0a] px-4 py-3">
-                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                        Status
-                                      </p>
-                                      <p className="mt-2 text-sm font-medium uppercase text-zinc-100">
-                                        {portfolioData.account.status ||
-                                          "active"}
-                                      </p>
-                                    </div>
-                                    <div className="bg-[#0a0a0a] px-4 py-3">
-                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                        Currency
-                                      </p>
-                                      <p className="mt-2 text-sm font-medium text-zinc-100">
-                                        {portfolioData.account.currency ||
-                                          "USD"}
-                                      </p>
-                                    </div>
-                                    <div className="bg-[#0a0a0a] px-4 py-3">
-                                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
-                                        Last Sync
-                                      </p>
-                                      <p className="mt-2 text-sm font-medium text-zinc-100">
-                                        {new Date(
-                                          portfolioData.fetched_at,
-                                        ).toLocaleString("en-US")}
-                                      </p>
-                                    </div>
-                                  </div>
-                                </div>
-                              </section>
-
-                              <PortfolioCard data={portfolioData} />
-                            </div>
                           </div>
 
                           <div className="space-y-4">
@@ -5169,6 +5499,127 @@ export default function CryptoDashboard() {
                           </div>
                         </>
                       ) : null}
+                    </>
+                  )}
+                </section>
+              </div>
+            ) : pathname === "/risk-analysis" ? (
+              <div ref={homeSectionRef} className="scroll-mt-24 space-y-6">
+                <section className="space-y-3">
+                  {!portfolioGateReady ? (
+                    <div className="flex items-center gap-3 border border-white/[0.07] bg-[#0a0a0a] px-4 py-8 text-sm text-zinc-500">
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Preparing risk analysis access...
+                    </div>
+                  ) : !portfolioConnected ? (
+                    <div className="mx-auto max-w-[580px] text-center">
+                      <div className="rounded-[20px] border border-white/[0.08] bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),rgba(10,10,10,0.95)_55%)] px-5 py-6 shadow-[0_18px_56px_rgba(0,0,0,0.42)] md:px-7 md:py-7">
+                        <div className="mx-auto mb-4 flex w-fit items-center gap-2.5 rounded-xl border border-white/[0.08] bg-black/25 px-3 py-2">
+                          <Image
+                            src="/logo.svg"
+                            alt="TrueMarkets"
+                            width={22}
+                            height={26}
+                            className="h-6 w-auto opacity-85"
+                          />
+                          <span className="text-sm text-zinc-500">↔</span>
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.95]">
+                            <BarChart2 className="h-3.5 w-3.5 text-black" />
+                          </div>
+                        </div>
+
+                        <h1 className="text-[26px] font-semibold leading-tight text-zinc-100 md:text-[30px]">
+                          Connect your financial accounts
+                        </h1>
+                        <p className="mx-auto mt-2 max-w-[470px] text-[15px] leading-6 text-zinc-400">
+                          Securely link your broker to unlock portfolio-wide
+                          risk analytics and simulations in one place.
+                        </p>
+
+                        <div className="mx-auto mt-6 max-w-[470px] space-y-3 text-left">
+                          <div className="flex items-start gap-2.5">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
+                              <Zap className="h-3.5 w-3.5 text-zinc-300" />
+                            </span>
+                            <div>
+                              <p className="text-[17px] font-medium text-zinc-100">
+                                Portfolio-wide risk visibility
+                              </p>
+                              <p className="mt-0.5 text-[14px] leading-5 text-zinc-400">
+                                Analyze all assets in one place with allocation
+                                breakdowns, volatility insights, and real-time
+                                performance tracking.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-start gap-2.5">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
+                              <Globe className="h-3.5 w-3.5 text-zinc-300" />
+                            </span>
+                            <div>
+                              <p className="text-[17px] font-medium text-zinc-100">
+                                Interactive simulation engine
+                              </p>
+                              <p className="mt-0.5 text-[14px] leading-5 text-zinc-400">
+                                Adjust asset allocations dynamically to see how
+                                changes impact returns, risk, and overall
+                                portfolio performance.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-start gap-2.5">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
+                              <RefreshCw className="h-3.5 w-3.5 text-zinc-300" />
+                            </span>
+                            <div>
+                              <p className="text-[17px] font-medium text-zinc-100">
+                                AI-driven insights
+                              </p>
+                              <p className="mt-0.5 text-[14px] leading-5 text-zinc-400">
+                                Get intelligent recommendations on reducing
+                                risk, optimizing allocation, and understanding
+                                potential market scenarios.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleConnectPortfolio}
+                          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.22] bg-white px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200"
+                        >
+                          Connect Account
+                        </button>
+                      </div>
+
+                      <p className="mt-3 text-xs text-zinc-500">
+                        Portfolio Connect show's Shreyansh Saurabhs's Alpaca
+                        Account
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <h1 className="text-[22px] font-semibold text-zinc-100">
+                          Risk Analysis
+                        </h1>
+                        <p className="mt-1 text-sm text-zinc-500">
+                          Analyze concentration, volatility, and drawdown risk
+                          across your portfolio.
+                        </p>
+                      </div>
+
+                      <div className="rounded-[20px] border border-white/[0.08] bg-[#0a0a0a] px-5 py-6">
+                        <p className="text-sm text-zinc-300">
+                          Risk analytics is being prepared. Connect your
+                          portfolio and visit this tab to view position
+                          concentration, scenario stress tests, and downside
+                          exposure metrics.
+                        </p>
+                      </div>
                     </>
                   )}
                 </section>
