@@ -3542,7 +3542,7 @@ export default function CryptoDashboard() {
   const hasUserMessages = messages.some((message) => message.role === "user");
   const composerPlaceholder = hasUserMessages
     ? "ask follow up question"
-    : "Ask about crypto, stocks, prices, trends ...";
+    : "Ask about crypto, prices, trends or place buy orders ...";
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerMenuRef = useRef<HTMLDivElement>(null);
