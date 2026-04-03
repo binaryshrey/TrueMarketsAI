@@ -10,7 +10,17 @@ const RANGE: Record<string, { days: string }> = {
   "1M": { days: "30" },
   "6M": { days: "180" },
   "3M": { days: "90" },
-  YTD: { days: String(Math.max(1, Math.ceil((Date.now() - new Date(new Date().getFullYear(), 0, 1).getTime()) / 86_400_000))) },
+  YTD: {
+    days: String(
+      Math.max(
+        1,
+        Math.ceil(
+          (Date.now() - new Date(new Date().getFullYear(), 0, 1).getTime()) /
+            86_400_000,
+        ),
+      ),
+    ),
+  },
   "1Y": { days: "365" },
   "5Y": { days: "1825" },
 };
@@ -33,12 +43,12 @@ export async function GET(req: NextRequest) {
   try {
     const headers = {
       Accept: "application/json",
-      "User-Agent": "FalseMarkets/1.0",
+      "User-Agent": "TrueMarkets/1.0",
     };
 
     const chartRes = await fetch(
       `${BASE}/coins/${coinId}/market_chart?vs_currency=usd&days=${days}${interval}`,
-      { headers, next: { revalidate: chartRevalidate } }
+      { headers, next: { revalidate: chartRevalidate } },
     );
     const chart = chartRes.ok ? await chartRes.json() : { prices: [] };
 
@@ -51,7 +61,7 @@ export async function GET(req: NextRequest) {
 
     const coinRes = await fetch(
       `${BASE}/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`,
-      { headers, next: { revalidate: 60 } }
+      { headers, next: { revalidate: 60 } },
     );
 
     if (!coinRes.ok) {
@@ -83,7 +93,7 @@ export async function GET(req: NextRequest) {
     console.error("coin-detail error:", err);
     return NextResponse.json(
       { error: "Failed to fetch coin data" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

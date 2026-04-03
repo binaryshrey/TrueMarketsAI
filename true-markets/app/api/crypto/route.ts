@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     const response = await fetch(url, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "FalseMarkets/1.0",
+        "User-Agent": "TrueMarkets/1.0",
       },
       next: { revalidate: 60 },
     });
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     console.error("Crypto API error:", error);
     return NextResponse.json(
       { error: "Failed to fetch crypto data" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

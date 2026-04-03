@@ -12,12 +12,12 @@ export const Logo = ({
     <div className={cn("flex items-center gap-2", className)}>
       <Image
         src="/logo-light.svg"
-        alt="FalseMarkets"
+        alt="TrueMarkets"
         width={32}
         height={32}
         className="h-8 w-8"
       />
-      <span className="text-xl font-semibold">FalseMarkets</span>
+      <span className="text-xl font-semibold">TrueMarkets</span>
     </div>
   );
 };

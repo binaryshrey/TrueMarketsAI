@@ -103,14 +103,10 @@ export async function GET(req: NextRequest) {
   const looksLikeTicker = /^[A-Z.\-]{1,6}$/.test(q);
   const cryptoHint =
     /\b(crypto|bitcoin|ethereum|btc|eth|sol|doge|xrp|cardano|altcoin)\b/.test(
-      lower
+      lower,
     );
 
-  const query = cryptoHint
-    ? `${q} crypto`
-    : looksLikeTicker
-      ? `${q} stock`
-      : q;
+  const query = cryptoHint ? `${q} crypto` : looksLikeTicker ? `${q} stock` : q;
   const rssUrl = new URL("https://news.google.com/rss/search");
   rssUrl.searchParams.set("q", query);
   rssUrl.searchParams.set("hl", "en-US");
@@ -121,7 +117,7 @@ export async function GET(req: NextRequest) {
     const res = await fetch(rssUrl.toString(), {
       headers: {
         Accept: "application/xml,text/xml",
-        "User-Agent": "FalseMarkets/1.0",
+        "User-Agent": "TrueMarkets/1.0",
       },
       next: { revalidate: 300 },
     });

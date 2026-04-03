@@ -14,9 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "False Markets",
-  description:
-    "Practice Your Pitch, Elevate Your Impact and Secure Your Success!",
+  title: "TrueMarkets AI",
+  description: "TrueMarkets AI",
 };
 
 export default function RootLayout({

@@ -38,14 +38,14 @@ export async function GET(req: NextRequest) {
       const yfRes = await fetch(
         `${YFINANCE_BACKEND_URL.replace(
           /\/$/,
-          ""
+          "",
         )}/yfinance/detail?symbol=${encodeURIComponent(
-          symbol
+          symbol,
         )}&range=${encodeURIComponent(range)}`,
         {
           headers: { Accept: "application/json" },
           cache: "no-store",
-        }
+        },
       );
 
       if (yfRes.ok) {
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
 
     const headers = {
       Accept: "application/json",
-      "User-Agent": "FalseMarkets/1.0",
+      "User-Agent": "TrueMarkets/1.0",
     };
 
     const [quoteRes, chartRes] = await Promise.all([
@@ -70,12 +70,12 @@ export async function GET(req: NextRequest) {
       }),
       fetch(
         `${YAHOO_CHART_URL}/${encodeURIComponent(
-          symbol
+          symbol,
         )}?range=${yahooRange}&interval=${interval}&includePrePost=false`,
         {
           headers,
           next: { revalidate: 60 },
-        }
+        },
       ),
     ]);
 
@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
     if (!quote || !chartResult) {
       return NextResponse.json(
         { error: "No equity data found for symbol" },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -137,7 +137,7 @@ export async function GET(req: NextRequest) {
       ath: num(quote.fiftyTwoWeekHigh, 0),
       atl: num(quote.fiftyTwoWeekLow, 0),
       last_updated: new Date(
-        num(quote.regularMarketTime, Date.now() / 1000) * 1000
+        num(quote.regularMarketTime, Date.now() / 1000) * 1000,
       ).toISOString(),
       prices,
       asset_type: "equity",
@@ -146,7 +146,7 @@ export async function GET(req: NextRequest) {
     console.error("equity-detail error:", err);
     return NextResponse.json(
       { error: "Failed to fetch equity data" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
