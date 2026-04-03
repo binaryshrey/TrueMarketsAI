@@ -6143,7 +6143,7 @@ export default function CryptoDashboard() {
                             Portfolio
                           </h1>
                           <p className="mt-1 text-sm text-zinc-500">
-                            Live Alpaca account data from your configured API
+                            Live Alpaca account data from Shreyansh's account
                             credentials.
                           </p>
                         </div>
@@ -6575,7 +6575,7 @@ export default function CryptoDashboard() {
                             Risk Analysis
                           </h1>
                           <p className="mt-1 text-sm text-zinc-500">
-                            Live Alpaca account data from your configured API
+                            Live Alpaca account data from Shreyansh's account
                             credentials.
                           </p>
                         </div>
