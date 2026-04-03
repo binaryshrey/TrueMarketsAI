@@ -1,0 +1,52 @@
+"use client";
+
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useDeferredValue,
+} from "react";
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
+import TradingDashboardModal from "@/components/trading-dashboard-modal";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Plus,
+  Search,
+  Send,
+  X,
+  RefreshCw,
+  BarChart2,
+  Zap,
+  Globe,
+  ArrowUpRight,
+  ArrowDownRight,
+  ExternalLink,
+  ChevronUp,
+  ChevronDown,
+  CircleUserRound,
+  Eye,
+  Heart,
+  MessageCircleMore,
+  Repeat2,
+  Hash,
+} from "lucide-react";
+import { toast } from "sonner";
+
+// ApexCharts — no SSR
+const ReactApexChart = dynamic(() => import("react-apexcharts"), {
+  ssr: false,
+  loading: () => <div className="w-20 h-9" />,
+});
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+

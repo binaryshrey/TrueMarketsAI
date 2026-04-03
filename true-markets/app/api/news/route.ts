@@ -7,6 +7,7 @@ interface NewsItem {
   link: string;
   source?: string;
   publishedAt?: string;
+  publishedAtIso?: string;
 }
 
 function decodeXmlEntities(input: string) {
@@ -48,22 +49,28 @@ function formatPublishedAt(dateRaw: string): string {
   });
 }
 
-function parseRss(xml: string): NewsItem[] {
+function parseRss(xml: string, limit: number): NewsItem[] {
   const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)];
   return itemMatches
-    .slice(0, 5)
+    .slice(0, limit)
     .map((m) => m[1])
     .map((block) => {
       const title = getTagValue(block, "title");
       const link = getTagValue(block, "link");
       const pubDate = getTagValue(block, "pubDate");
       const source = getSource(block);
+      const publishedDt = pubDate ? new Date(pubDate) : null;
+      const publishedAtIso =
+        publishedDt && !Number.isNaN(publishedDt.getTime())
+          ? publishedDt.toISOString()
+          : undefined;
 
       return {
         title,
         link,
         source: source || undefined,
         publishedAt: formatPublishedAt(pubDate) || undefined,
+        publishedAtIso,
       };
     })
     .filter((item) => item.title && item.link);
@@ -94,6 +101,10 @@ function buildFollowUps(query: string, items: NewsItem[]) {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("q") || "").trim();
+  const rawLimit = Number(searchParams.get("limit") || "5");
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(30, Math.trunc(rawLimit)))
+    : 5;
 
   if (!q) {
     return NextResponse.json({ items: [], followUps: [] });
@@ -127,7 +138,7 @@ export async function GET(req: NextRequest) {
     }
 
     const xml = await res.text();
-    const items = parseRss(xml);
+    const items = parseRss(xml, limit);
     const followUps = buildFollowUps(q, items);
 
     return NextResponse.json({ items, followUps });

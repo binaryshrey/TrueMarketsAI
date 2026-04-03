@@ -139,6 +139,7 @@ interface NewsItem {
   link: string;
   source?: string;
   publishedAt?: string;
+  publishedAtIso?: string;
 }
 
 interface SocialMentionPost {
@@ -547,6 +548,314 @@ function buildLinePathWithBounds(
 function pctCompact(n?: number): string {
   if (!Number.isFinite(n)) return "--";
   return `${Math.abs(n ?? 0).toFixed(1)}%`;
+}
+
+interface NotableTimelineEntry {
+  label: string;
+  summary: string;
+  citedCount: number;
+  analyzedCount: number;
+}
+
+type AllocationSimulatorWeights = Record<string, number>;
+
+interface PortfolioRiskMetrics {
+  expectedReturnPct: number;
+  volatilityPct: number;
+  maxDrawdownPct: number;
+  sharpe: number;
+}
+
+interface AllocationSimulationResult {
+  simulatedPortfolio: {
+    expectedReturnPct: number;
+    riskLabel: "Low" | "Medium" | "High";
+    maxDrawdownPct: number;
+    sharpe: number;
+  };
+  impact: {
+    netPnlImpact: number;
+    riskReductionPct: number;
+    profileShift: "Safer" | "Balanced" | "Aggressive";
+  };
+  recommendations: string[];
+}
+
+interface AllocationProposal {
+  symbol: string;
+  currentPct: number;
+  targetPct: number;
+  expectedReturnPct: number;
+  volatilityPct: number;
+  maxDrawdownPct: number;
+}
+
+function normalizePortfolioSymbol(symbol: string): string {
+  const cleaned = symbol.toUpperCase().replace(/[^A-Z]/g, "");
+  if (cleaned.endsWith("USDT")) return cleaned.slice(0, -4);
+  if (cleaned.endsWith("USD")) return cleaned.slice(0, -3);
+  return cleaned;
+}
+
+function hasSameAllocationWeights(
+  current: AllocationSimulatorWeights,
+  next: AllocationSimulatorWeights,
+): boolean {
+  const currentKeys = Object.keys(current).sort();
+  const nextKeys = Object.keys(next).sort();
+
+  if (currentKeys.length !== nextKeys.length) return false;
+
+  for (let index = 0; index < currentKeys.length; index += 1) {
+    const currentKey = currentKeys[index];
+    const nextKey = nextKeys[index];
+
+    if (currentKey !== nextKey) return false;
+
+    const currentValue = current[currentKey] ?? 0;
+    const nextValue = next[nextKey] ?? 0;
+    if (Math.abs(currentValue - nextValue) > 0.05) return false;
+  }
+
+  return true;
+}
+
+function normalizeAllocationTargets(
+  weights: AllocationSimulatorWeights,
+  symbols: string[],
+): AllocationSimulatorWeights {
+  const rawTotal = symbols.reduce(
+    (sum, symbol) => sum + Math.max(0, weights[symbol] ?? 0),
+    0,
+  );
+  const scale = rawTotal > 100 ? 100 / rawTotal : 1;
+
+  return symbols.reduce((acc, symbol) => {
+    acc[symbol] = Math.max(0, weights[symbol] ?? 0) * scale;
+    return acc;
+  }, {} as AllocationSimulatorWeights);
+}
+
+function buildLocalSimulationRecommendations(
+  proposals: AllocationProposal[],
+  riskLabel: "Low" | "Medium" | "High",
+): string[] {
+  const recommendations: string[] = [];
+  const deltas = proposals
+    .map((proposal) => ({
+      symbol: proposal.symbol,
+      delta: proposal.targetPct - proposal.currentPct,
+      expectedReturnPct: proposal.expectedReturnPct,
+      volatilityPct: proposal.volatilityPct,
+    }))
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const largestReduction = deltas.find((entry) => entry.delta <= -1.5);
+  if (largestReduction) {
+    const reductionPct = Math.abs(largestReduction.delta);
+    const volatilityCutPct = Math.max(4, Math.round(reductionPct * 2.4));
+    recommendations.push(
+      `Reduce ${largestReduction.symbol} by ${reductionPct.toFixed(1)}% to lower volatility by about ${volatilityCutPct}%`,
+    );
+  }
+
+  const strongestReturnAsset = [...deltas]
+    .filter((entry) => entry.expectedReturnPct > 0)
+    .sort((a, b) => b.expectedReturnPct - a.expectedReturnPct)[0];
+  if (strongestReturnAsset) {
+    recommendations.push(
+      `Increase ${strongestReturnAsset.symbol} for better risk-adjusted return potential`,
+    );
+  }
+
+  if (riskLabel !== "Low") {
+    recommendations.push("Add a stablecoin hedge to dampen downside swings");
+  } else {
+    recommendations.push(
+      "Keep a small stablecoin buffer for downside protection",
+    );
+  }
+
+  return recommendations.slice(0, 3);
+}
+
+function computeSeriesVolatilityPct(series: number[]): number {
+  const prices = series.filter((value) => Number.isFinite(value) && value > 0);
+  if (prices.length < 3) return 0;
+
+  const returns: number[] = [];
+  for (let index = 1; index < prices.length; index += 1) {
+    const prev = prices[index - 1];
+    const current = prices[index];
+    if (prev <= 0) continue;
+    returns.push((current - prev) / prev);
+  }
+
+  if (returns.length < 2) return 0;
+
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance =
+    returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    returns.length;
+  const hourlyStdDev = Math.sqrt(variance);
+  const annualizedVolatility = hourlyStdDev * Math.sqrt(24 * 365) * 100;
+
+  return Number.isFinite(annualizedVolatility)
+    ? Math.max(0, annualizedVolatility)
+    : 0;
+}
+
+function computeSeriesMaxDrawdownPct(series: number[]): number {
+  const prices = series.filter((value) => Number.isFinite(value) && value > 0);
+  if (prices.length < 2) return 0;
+
+  let peak = prices[0];
+  let maxDrawdown = 0;
+
+  for (const price of prices) {
+    peak = Math.max(peak, price);
+    const drawdown = ((price - peak) / peak) * 100;
+    maxDrawdown = Math.min(maxDrawdown, drawdown);
+  }
+
+  return maxDrawdown;
+}
+
+function classifyRiskLevel(volatilityPct: number): "Low" | "Medium" | "High" {
+  if (volatilityPct >= 55) return "High";
+  if (volatilityPct >= 30) return "Medium";
+  return "Low";
+}
+
+function classifySafetyStance(
+  currentVolatilityPct: number,
+  simulatedVolatilityPct: number,
+): "Safer" | "Balanced" | "Aggressive" {
+  if (simulatedVolatilityPct <= currentVolatilityPct - 3) return "Safer";
+  if (simulatedVolatilityPct >= currentVolatilityPct + 3) return "Aggressive";
+  return "Balanced";
+}
+
+function buildWeightedRiskMetrics(
+  components: Array<{ weightPct: number; metrics: PortfolioRiskMetrics }>,
+): PortfolioRiskMetrics {
+  const totalWeight = components.reduce(
+    (sum, component) => sum + Math.max(0, component.weightPct),
+    0,
+  );
+
+  if (totalWeight <= 0) {
+    return {
+      expectedReturnPct: 0,
+      volatilityPct: 0,
+      maxDrawdownPct: 0,
+      sharpe: 0,
+    };
+  }
+
+  const weighted = components.reduce(
+    (acc, component) => {
+      const weight = Math.max(0, component.weightPct) / totalWeight;
+      acc.expectedReturnPct += component.metrics.expectedReturnPct * weight;
+      acc.volatilityPct += component.metrics.volatilityPct * weight;
+      acc.maxDrawdownPct += component.metrics.maxDrawdownPct * weight;
+      acc.sharpe += component.metrics.sharpe * weight;
+      return acc;
+    },
+    {
+      expectedReturnPct: 0,
+      volatilityPct: 0,
+      maxDrawdownPct: 0,
+      sharpe: 0,
+    },
+  );
+
+  return weighted;
+}
+
+function toHeadlineSentence(rawTitle: string): string {
+  const trimmed = rawTitle
+    .replace(/\s*[-|•]\s*[^-|•]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!trimmed) return "";
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function resolveNewsTimestamp(item: NewsItem): number | null {
+  if (item.publishedAtIso) {
+    const parsed = Date.parse(item.publishedAtIso);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  if (item.publishedAt) {
+    const parsed = Date.parse(
+      `${item.publishedAt} ${new Date().getFullYear()}`,
+    );
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  return null;
+}
+
+function formatTimelineLabel(dayStart: number): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (dayStart === today.getTime()) return "Today";
+  if (dayStart === yesterday.getTime()) return "Yesterday";
+
+  return new Date(dayStart).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function buildNotablePriceTimeline(items: NewsItem[]): NotableTimelineEntry[] {
+  if (items.length === 0) return [];
+
+  const sorted = [...items].sort((a, b) => {
+    const ta = resolveNewsTimestamp(a) ?? 0;
+    const tb = resolveNewsTimestamp(b) ?? 0;
+    return tb - ta;
+  });
+
+  const byDay = new Map<number, NewsItem[]>();
+
+  for (const item of sorted) {
+    const ts = resolveNewsTimestamp(item) ?? Date.now();
+    const dt = new Date(ts);
+    dt.setHours(0, 0, 0, 0);
+    const dayStart = dt.getTime();
+
+    if (!byDay.has(dayStart)) {
+      byDay.set(dayStart, []);
+    }
+    byDay.get(dayStart)?.push(item);
+  }
+
+  return [...byDay.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .slice(0, 4)
+    .map(([dayStart, dayItems]) => {
+      const uniqueTitles = Array.from(
+        new Set(dayItems.map((item) => toHeadlineSentence(item.title))),
+      )
+        .filter(Boolean)
+        .slice(0, 4);
+
+      return {
+        label: formatTimelineLabel(dayStart),
+        summary: uniqueTitles.join(" "),
+        citedCount: uniqueTitles.length,
+        analyzedCount: items.length,
+      };
+    })
+    .filter((entry) => entry.summary.length > 0);
 }
 
 // ─── Card Sparkline (full-width area chart) ───────────────────────────────────
@@ -3200,6 +3509,22 @@ export default function CryptoDashboard() {
   const [watchlistNewsLoading, setWatchlistNewsLoading] = useState(false);
   const [trendingNews, setTrendingNews] = useState<NewsItem[]>([]);
   const [trendingNewsLoading, setTrendingNewsLoading] = useState(false);
+  const [riskAnalysisNewsBySymbol, setRiskAnalysisNewsBySymbol] = useState<
+    Record<string, NewsItem[]>
+  >({});
+  const [riskAnalysisNewsLoading, setRiskAnalysisNewsLoading] = useState(false);
+  const [allocationSimulatorTargets, setAllocationSimulatorTargets] =
+    useState<AllocationSimulatorWeights>({});
+  const [
+    allocationSimulatorAppliedTargets,
+    setAllocationSimulatorAppliedTargets,
+  ] = useState<AllocationSimulatorWeights>({});
+  const [allocationSimulatorTouched, setAllocationSimulatorTouched] =
+    useState(false);
+  const [allocationSimulationLoading, setAllocationSimulationLoading] =
+    useState(false);
+  const [allocationSimulationResult, setAllocationSimulationResult] =
+    useState<AllocationSimulationResult | null>(null);
   const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(
     null,
   );
@@ -3225,6 +3550,7 @@ export default function CryptoDashboard() {
   const homeSectionRef = useRef<HTMLDivElement>(null);
   const predictionsSectionRef = useRef<HTMLElement>(null);
   const watchlistDraftIdsRef = useRef<string[]>(watchlistDraftIds);
+  const allocationAutoAnalyzeTriggeredRef = useRef(false);
   const deferredPredictionSearch = useDeferredValue(predictionSearch);
 
   const fetchData = useCallback(
@@ -3284,7 +3610,11 @@ export default function CryptoDashboard() {
 
   const fetchPortfolioRouteData = useCallback(
     async (silent = false) => {
-      if (pathname !== "/portfolio" || !portfolioConnected) return;
+      if (
+        (pathname !== "/portfolio" && pathname !== "/risk-analysis") ||
+        !portfolioConnected
+      )
+        return;
 
       if (!silent) setPortfolioRouteLoading(true);
       setPortfolioRouteError(null);
@@ -3314,7 +3644,7 @@ export default function CryptoDashboard() {
 
   useEffect(() => {
     if (
-      pathname !== "/portfolio" ||
+      (pathname !== "/portfolio" && pathname !== "/risk-analysis") ||
       !portfolioGateReady ||
       !portfolioConnected
     ) {
@@ -4081,6 +4411,14 @@ export default function CryptoDashboard() {
     .slice(0, 5)
     .map((coin) => coin.name)
     .join(" OR ");
+  const riskAnalysisNewsSymbols = Array.from(
+    new Set(
+      (portfolioData?.positions ?? [])
+        .map((position) => position.symbol?.trim().toUpperCase())
+        .filter((symbol): symbol is string => Boolean(symbol)),
+    ),
+  );
+  const riskAnalysisNewsSymbolsKey = riskAnalysisNewsSymbols.join("|");
 
   useEffect(() => {
     if (pathname !== "/watchlist" || !watchlistNewsQuery) {
@@ -4157,6 +4495,60 @@ export default function CryptoDashboard() {
       cancelled = true;
     };
   }, [pathname, trendingNewsQuery]);
+
+  useEffect(() => {
+    if (
+      pathname !== "/risk-analysis" ||
+      !portfolioGateReady ||
+      !portfolioConnected ||
+      riskAnalysisNewsSymbols.length === 0
+    ) {
+      setRiskAnalysisNewsBySymbol({});
+      setRiskAnalysisNewsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setRiskAnalysisNewsLoading(true);
+
+      try {
+        const entries = await Promise.all(
+          riskAnalysisNewsSymbols.map(async (symbol) => {
+            try {
+              const response = await fetch(
+                `/api/news?q=${encodeURIComponent(symbol)}&limit=30`,
+              );
+              const payload = (await response.json()) as { items?: NewsItem[] };
+              return [symbol, payload.items ?? []] as const;
+            } catch {
+              return [symbol, []] as const;
+            }
+          }),
+        );
+
+        if (!cancelled) {
+          setRiskAnalysisNewsBySymbol(Object.fromEntries(entries));
+        }
+      } finally {
+        if (!cancelled) {
+          setRiskAnalysisNewsLoading(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    pathname,
+    portfolioGateReady,
+    portfolioConnected,
+    riskAnalysisNewsSymbolsKey,
+    riskAnalysisNewsSymbols.length,
+  ]);
 
   const topSocialMentionPosts = TOP_SOCIAL_MENTION_POSTS;
 
@@ -4295,6 +4687,534 @@ export default function CryptoDashboard() {
         portfolioData.summary.buying_power - portfolioData.summary.equity,
       )
     : 0;
+  const riskAnalysisAssetCards = (portfolioData?.positions ?? []).map(
+    (position) => {
+      const qty = Number(position.qty || 0);
+      const avgEntry = Number(position.avg_entry_price || 0);
+      const marketValue = Number(position.market_value || 0);
+      const currentPrice = qty > 0 ? marketValue / qty : avgEntry;
+      const deltaPct = Number(position.unrealized_plpc || 0);
+      const intradayMovePct = Number(position.unrealized_intraday_plpc);
+      const notableMovePct = Number.isFinite(intradayMovePct)
+        ? intradayMovePct
+        : deltaPct;
+      const positive = notableMovePct >= 0;
+
+      const start = avgEntry > 0 ? avgEntry : currentPrice;
+      const end =
+        Number.isFinite(currentPrice) && currentPrice > 0
+          ? currentPrice
+          : start;
+
+      const sparkline =
+        Number.isFinite(start) && Number.isFinite(end) && start > 0 && end > 0
+          ? Array.from({ length: 24 }, (_, index) => {
+              const t = index / 23;
+              const base = start + (end - start) * t;
+              const wave = Math.sin(t * Math.PI * 4) * start * 0.01;
+              return Math.max(0.000001, base + wave * (positive ? 1 : -1));
+            })
+          : [];
+
+      return {
+        id: `${position.symbol}-${position.side}`,
+        symbol: position.symbol,
+        qty,
+        marketValue,
+        currentPrice,
+        notableMovePct,
+        positive,
+        sparkline,
+      };
+    },
+  );
+
+  const portfolioSimulatorSymbols = (() => {
+    const rows = (portfolioData?.positions ?? [])
+      .map((position) => ({
+        symbol: normalizePortfolioSymbol(position.symbol),
+        allocationPct: Math.max(0, Number(position.allocation_pct || 0)),
+      }))
+      .filter((row) => row.symbol.length > 0);
+
+    const allocationBySymbol = new Map<string, number>();
+    for (const row of rows) {
+      allocationBySymbol.set(
+        row.symbol,
+        (allocationBySymbol.get(row.symbol) ?? 0) + row.allocationPct,
+      );
+    }
+
+    return [...allocationBySymbol.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([symbol]) => symbol);
+  })();
+
+  const simulatorCurrentAllocations = Object.fromEntries(
+    portfolioSimulatorSymbols.map((symbol) => {
+      const allocationPct = (portfolioData?.positions ?? []).reduce(
+        (sum, position) => {
+          if (normalizePortfolioSymbol(position.symbol) !== symbol) return sum;
+          return sum + Math.max(0, Number(position.allocation_pct || 0));
+        },
+        0,
+      );
+
+      return [symbol, Number(allocationPct.toFixed(1))] as const;
+    }),
+  ) as AllocationSimulatorWeights;
+
+  const coinBySymbol = new Map(
+    coins.map((coin) => [coin.symbol.toUpperCase(), coin] as const),
+  );
+  const assetCardByBaseSymbol = new Map(
+    riskAnalysisAssetCards.map((asset) => [
+      normalizePortfolioSymbol(asset.symbol),
+      asset,
+    ]),
+  );
+
+  const positionRiskRows = (portfolioData?.positions ?? []).map((position) => {
+    const expectedReturnPct = Number(position.unrealized_plpc || 0);
+    const intradayMovePct = Number(position.unrealized_intraday_plpc || 0);
+
+    return {
+      baseSymbol: normalizePortfolioSymbol(position.symbol),
+      allocationPct: Math.max(0, Number(position.allocation_pct || 0)),
+      expectedReturnPct: Number.isFinite(expectedReturnPct)
+        ? expectedReturnPct
+        : 0,
+      fallbackVolatilityPct: Math.max(10, Math.abs(intradayMovePct) * 4.5),
+      fallbackMaxDrawdownPct: -Math.max(8, Math.abs(intradayMovePct) * 6),
+    };
+  });
+
+  const trackedAssetMetrics = portfolioSimulatorSymbols.map((symbol) => {
+    const matchingRows = positionRiskRows.filter(
+      (row) => row.baseSymbol === symbol,
+    );
+    const totalMatchingAllocation = matchingRows.reduce(
+      (sum, row) => sum + row.allocationPct,
+      0,
+    );
+
+    const rowExpectedReturn =
+      totalMatchingAllocation > 0
+        ? matchingRows.reduce(
+            (sum, row) => sum + row.expectedReturnPct * row.allocationPct,
+            0,
+          ) / totalMatchingAllocation
+        : null;
+    const rowVolatility =
+      totalMatchingAllocation > 0
+        ? matchingRows.reduce(
+            (sum, row) => sum + row.fallbackVolatilityPct * row.allocationPct,
+            0,
+          ) / totalMatchingAllocation
+        : null;
+    const rowDrawdown =
+      totalMatchingAllocation > 0
+        ? matchingRows.reduce(
+            (sum, row) => sum + row.fallbackMaxDrawdownPct * row.allocationPct,
+            0,
+          ) / totalMatchingAllocation
+        : null;
+
+    const coin = coinBySymbol.get(symbol);
+    const sparkline =
+      coin?.sparkline_in_7d?.price ??
+      assetCardByBaseSymbol.get(symbol)?.sparkline ??
+      [];
+
+    const impliedReturnPct = Number.isFinite(
+      coin?.price_change_percentage_7d_in_currency,
+    )
+      ? Number(coin?.price_change_percentage_7d_in_currency)
+      : (rowExpectedReturn ?? 0);
+    const impliedVolatilityPct = computeSeriesVolatilityPct(sparkline);
+    const impliedDrawdownPct = computeSeriesMaxDrawdownPct(sparkline);
+    const volatilityPct =
+      impliedVolatilityPct > 0
+        ? impliedVolatilityPct
+        : (rowVolatility ?? Math.max(10, Math.abs(impliedReturnPct) * 1.4));
+    const maxDrawdownPct =
+      impliedDrawdownPct < 0
+        ? impliedDrawdownPct
+        : (rowDrawdown ?? -Math.max(8, Math.abs(impliedReturnPct) * 1.2));
+    const sharpe = volatilityPct > 0 ? impliedReturnPct / volatilityPct : 0;
+
+    return {
+      symbol,
+      currentAllocationPct: simulatorCurrentAllocations[symbol] ?? 0,
+      metrics: {
+        expectedReturnPct: impliedReturnPct,
+        volatilityPct,
+        maxDrawdownPct,
+        sharpe,
+      },
+    };
+  });
+
+  const trackedCurrentWeights = trackedAssetMetrics.reduce((acc, asset) => {
+    acc[asset.symbol] = asset.currentAllocationPct;
+    return acc;
+  }, {} as AllocationSimulatorWeights);
+
+  const trackedMetricsBySymbol = trackedAssetMetrics.reduce(
+    (acc, asset) => {
+      acc[asset.symbol] = asset.metrics;
+      return acc;
+    },
+    {} as Record<string, PortfolioRiskMetrics>,
+  );
+
+  const trackedSymbolSet = new Set(portfolioSimulatorSymbols);
+
+  const untrackedPositionRows = positionRiskRows.filter(
+    (row) => !trackedSymbolSet.has(row.baseSymbol),
+  );
+  const otherAssetMetrics =
+    untrackedPositionRows.length > 0
+      ? buildWeightedRiskMetrics(
+          untrackedPositionRows.map((row) => ({
+            weightPct: row.allocationPct,
+            metrics: {
+              expectedReturnPct: row.expectedReturnPct,
+              volatilityPct: row.fallbackVolatilityPct,
+              maxDrawdownPct: row.fallbackMaxDrawdownPct,
+              sharpe:
+                row.fallbackVolatilityPct > 0
+                  ? row.expectedReturnPct / row.fallbackVolatilityPct
+                  : 0,
+            },
+          })),
+        )
+      : {
+          expectedReturnPct: 0,
+          volatilityPct: 16,
+          maxDrawdownPct: -10,
+          sharpe: 0,
+        };
+  const cashMetrics: PortfolioRiskMetrics = {
+    expectedReturnPct: 0,
+    volatilityPct: 1,
+    maxDrawdownPct: 0,
+    sharpe: 0,
+  };
+
+  const currentTrackedTotal = portfolioSimulatorSymbols.reduce(
+    (sum, symbol) => sum + trackedCurrentWeights[symbol],
+    0,
+  );
+  const totalPositionAllocationPct = portfolioData
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          (portfolioData.positions ?? []).reduce(
+            (sum, position) =>
+              sum + Math.max(0, Number(position.allocation_pct || 0)),
+            0,
+          ),
+        ),
+      )
+    : Math.min(100, currentTrackedTotal);
+  const currentOtherWeightPct = Math.max(
+    0,
+    totalPositionAllocationPct - currentTrackedTotal,
+  );
+  const currentCashWeightPct = Math.max(0, 100 - totalPositionAllocationPct);
+
+  const rawDraftTotal = portfolioSimulatorSymbols.reduce(
+    (sum, symbol) => sum + Math.max(0, allocationSimulatorTargets[symbol] ?? 0),
+    0,
+  );
+  const normalizedDraftTargets = normalizeAllocationTargets(
+    allocationSimulatorTargets,
+    portfolioSimulatorSymbols,
+  );
+  const allocationSimulationPending =
+    portfolioSimulatorSymbols.length > 0 &&
+    !hasSameAllocationWeights(
+      allocationSimulatorAppliedTargets,
+      normalizedDraftTargets,
+    );
+  const simulatedTrackedWeights = normalizeAllocationTargets(
+    allocationSimulatorAppliedTargets,
+    portfolioSimulatorSymbols,
+  );
+  const simulatedTrackedTotal = portfolioSimulatorSymbols.reduce(
+    (sum, symbol) => sum + simulatedTrackedWeights[symbol],
+    0,
+  );
+  const simulatedRemainderPct = Math.max(0, 100 - simulatedTrackedTotal);
+  const remainderReference = currentOtherWeightPct + currentCashWeightPct;
+  const simulatedOtherWeightPct =
+    remainderReference > 0
+      ? (simulatedRemainderPct * currentOtherWeightPct) / remainderReference
+      : simulatedRemainderPct;
+  const simulatedCashWeightPct = Math.max(
+    0,
+    simulatedRemainderPct - simulatedOtherWeightPct,
+  );
+
+  const buildPortfolioMetrics = (
+    trackedWeights: AllocationSimulatorWeights,
+    otherWeightPct: number,
+    cashWeightPct: number,
+  ) => {
+    const components = portfolioSimulatorSymbols.map((symbol) => {
+      const metrics = trackedMetricsBySymbol[symbol] ?? {
+        expectedReturnPct: 0,
+        volatilityPct: 0,
+        maxDrawdownPct: 0,
+        sharpe: 0,
+      };
+
+      return {
+        weightPct: trackedWeights[symbol] ?? 0,
+        metrics,
+      };
+    });
+
+    components.push({ weightPct: otherWeightPct, metrics: otherAssetMetrics });
+    components.push({ weightPct: cashWeightPct, metrics: cashMetrics });
+
+    return buildWeightedRiskMetrics(components);
+  };
+
+  const currentPortfolioRiskMetrics = buildPortfolioMetrics(
+    trackedCurrentWeights,
+    currentOtherWeightPct,
+    currentCashWeightPct,
+  );
+  const simulatedPortfolioRiskMetrics = buildPortfolioMetrics(
+    simulatedTrackedWeights,
+    simulatedOtherWeightPct,
+    simulatedCashWeightPct,
+  );
+  const currentPortfolioReturnFromPortfolio =
+    portfolioData?.summary.day_pnl_pct ??
+    currentPortfolioRiskMetrics.expectedReturnPct;
+  const currentDrawdownCandidates = (portfolioData?.positions ?? [])
+    .map((position) => Number(position.unrealized_intraday_plpc))
+    .filter((value) => Number.isFinite(value));
+  const fallbackDrawdownCandidates = (portfolioData?.positions ?? [])
+    .map((position) => Number(position.unrealized_plpc))
+    .filter((value) => Number.isFinite(value));
+  const currentPortfolioDrawdownFromPortfolio =
+    currentDrawdownCandidates.length > 0
+      ? Math.min(0, ...currentDrawdownCandidates)
+      : fallbackDrawdownCandidates.length > 0
+        ? Math.min(0, ...fallbackDrawdownCandidates)
+        : currentPortfolioRiskMetrics.maxDrawdownPct;
+  const currentPortfolioVolatilityForDisplay =
+    currentPortfolioRiskMetrics.volatilityPct;
+  const currentPortfolioSharpeFromPortfolio =
+    currentPortfolioVolatilityForDisplay > 0
+      ? currentPortfolioReturnFromPortfolio /
+        currentPortfolioVolatilityForDisplay
+      : 0;
+  const currentPortfolioRiskLabel = classifyRiskLevel(
+    currentPortfolioVolatilityForDisplay,
+  );
+  const simulatedPortfolioRiskLabel = classifyRiskLevel(
+    simulatedPortfolioRiskMetrics.volatilityPct,
+  );
+  const riskReductionPct =
+    currentPortfolioVolatilityForDisplay > 0
+      ? ((currentPortfolioVolatilityForDisplay -
+          simulatedPortfolioRiskMetrics.volatilityPct) /
+          currentPortfolioVolatilityForDisplay) *
+        100
+      : 0;
+  const expectedReturnDeltaPct =
+    simulatedPortfolioRiskMetrics.expectedReturnPct -
+    currentPortfolioReturnFromPortfolio;
+  const netPnlImpact =
+    (portfolioData?.summary.equity ?? 0) * (expectedReturnDeltaPct / 100);
+  const safetyStance = classifySafetyStance(
+    currentPortfolioVolatilityForDisplay,
+    simulatedPortfolioRiskMetrics.volatilityPct,
+  );
+  const simulatedPortfolioDisplay = allocationSimulationResult
+    ? allocationSimulationResult.simulatedPortfolio
+    : {
+        expectedReturnPct: simulatedPortfolioRiskMetrics.expectedReturnPct,
+        riskLabel: simulatedPortfolioRiskLabel,
+        maxDrawdownPct: simulatedPortfolioRiskMetrics.maxDrawdownPct,
+        sharpe: simulatedPortfolioRiskMetrics.sharpe,
+      };
+  const impactDisplay = allocationSimulationResult
+    ? allocationSimulationResult.impact
+    : {
+        netPnlImpact,
+        riskReductionPct,
+        profileShift: safetyStance,
+      };
+  const recommendationsDisplay =
+    allocationSimulationResult?.recommendations ?? [];
+  const safetyStanceForDisplay = impactDisplay.profileShift;
+  const safetyStanceToneClass =
+    safetyStanceForDisplay === "Safer"
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+      : safetyStanceForDisplay === "Aggressive"
+        ? "border-red-500/30 bg-red-500/10 text-red-300"
+        : "border-amber-500/30 bg-amber-500/10 text-amber-300";
+
+  const handleAnalyzeAllocationSimulation = useCallback(async () => {
+    if (portfolioSimulatorSymbols.length === 0) return;
+
+    const normalizedTargets = normalizeAllocationTargets(
+      allocationSimulatorTargets,
+      portfolioSimulatorSymbols,
+    );
+
+    const proposedAllocations: AllocationProposal[] =
+      portfolioSimulatorSymbols.map((symbol) => ({
+        symbol,
+        currentPct: trackedCurrentWeights[symbol] ?? 0,
+        targetPct: normalizedTargets[symbol] ?? 0,
+        expectedReturnPct:
+          trackedMetricsBySymbol[symbol]?.expectedReturnPct ?? 0,
+        volatilityPct: trackedMetricsBySymbol[symbol]?.volatilityPct ?? 0,
+        maxDrawdownPct: trackedMetricsBySymbol[symbol]?.maxDrawdownPct ?? 0,
+      }));
+    const localRecommendations = buildLocalSimulationRecommendations(
+      proposedAllocations,
+      simulatedPortfolioRiskLabel,
+    );
+
+    const localProjection = {
+      simulatedPortfolio: {
+        expectedReturnPct: simulatedPortfolioRiskMetrics.expectedReturnPct,
+        riskLabel: simulatedPortfolioRiskLabel,
+        maxDrawdownPct: simulatedPortfolioRiskMetrics.maxDrawdownPct,
+        sharpe: simulatedPortfolioRiskMetrics.sharpe,
+      },
+      impact: {
+        netPnlImpact,
+        riskReductionPct,
+        profileShift: safetyStance,
+      },
+      recommendations: localRecommendations,
+    };
+
+    // Show a fast local estimate immediately while the remote model refines it.
+    setAllocationSimulationResult(localProjection);
+    setAllocationSimulatorAppliedTargets(normalizedTargets);
+    setAllocationSimulatorTouched(true);
+    setAllocationSimulationLoading(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, 4500);
+
+    try {
+      const response = await fetch("/api/portfolio-simulation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          currentPortfolio: {
+            equity: portfolioData?.summary.equity ?? 0,
+            returnPct: currentPortfolioReturnFromPortfolio,
+            riskLabel: currentPortfolioRiskLabel,
+            volatilityPct: currentPortfolioVolatilityForDisplay,
+            maxDrawdownPct: currentPortfolioDrawdownFromPortfolio,
+            sharpe: currentPortfolioSharpeFromPortfolio,
+          },
+          proposedAllocations,
+          localProjection,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to analyze simulated allocation.");
+      }
+
+      const payload = (await response.json()) as AllocationSimulationResult;
+      setAllocationSimulationResult(payload);
+    } catch {
+      // Keep the optimistic local estimate when the remote call is slow/unavailable.
+    } finally {
+      window.clearTimeout(timeoutId);
+      setAllocationSimulationLoading(false);
+    }
+  }, [
+    allocationSimulatorTargets,
+    currentPortfolioDrawdownFromPortfolio,
+    currentPortfolioReturnFromPortfolio,
+    currentPortfolioRiskLabel,
+    currentPortfolioSharpeFromPortfolio,
+    currentPortfolioVolatilityForDisplay,
+    netPnlImpact,
+    portfolioData?.summary.equity,
+    portfolioSimulatorSymbols,
+    riskReductionPct,
+    safetyStance,
+    simulatedPortfolioRiskLabel,
+    simulatedPortfolioRiskMetrics.expectedReturnPct,
+    simulatedPortfolioRiskMetrics.maxDrawdownPct,
+    simulatedPortfolioRiskMetrics.sharpe,
+    trackedCurrentWeights,
+    trackedMetricsBySymbol,
+  ]);
+
+  useEffect(() => {
+    if (pathname !== "/risk-analysis") {
+      setAllocationSimulatorTouched(false);
+      return;
+    }
+
+    if (allocationSimulatorTouched) return;
+
+    setAllocationSimulatorTargets((prev) => {
+      if (hasSameAllocationWeights(prev, simulatorCurrentAllocations)) {
+        return prev;
+      }
+
+      return simulatorCurrentAllocations;
+    });
+    setAllocationSimulatorAppliedTargets((prev) => {
+      if (hasSameAllocationWeights(prev, simulatorCurrentAllocations)) {
+        return prev;
+      }
+
+      return simulatorCurrentAllocations;
+    });
+    setAllocationSimulationResult(null);
+  }, [pathname, allocationSimulatorTouched, simulatorCurrentAllocations]);
+
+  useEffect(() => {
+    if (pathname !== "/risk-analysis" || !allocationSimulationPending) {
+      allocationAutoAnalyzeTriggeredRef.current = false;
+      return;
+    }
+
+    const onScroll = () => {
+      if (
+        allocationSimulationLoading ||
+        allocationAutoAnalyzeTriggeredRef.current
+      ) {
+        return;
+      }
+
+      allocationAutoAnalyzeTriggeredRef.current = true;
+      toast("Analysing, Please wait!");
+      void handleAnalyzeAllocationSimulation();
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [
+    pathname,
+    allocationSimulationPending,
+    allocationSimulationLoading,
+    handleAnalyzeAllocationSimulation,
+  ]);
 
   // ── Skeleton ──
   if (loading) {
@@ -5147,39 +6067,6 @@ export default function CryptoDashboard() {
                             credentials.
                           </p>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs uppercase tracking-[0.14em] text-zinc-500">
-                            {portfolioData
-                              ? formatRelativeUpdate(
-                                  new Date(portfolioData.fetched_at).getTime(),
-                                )
-                              : "Waiting for account data"}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void fetchPortfolioRouteData();
-                            }}
-                            disabled={portfolioRouteLoading}
-                            className="inline-flex items-center gap-2 border border-white/[0.08] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-300 transition-colors hover:border-white/[0.12] hover:text-white disabled:cursor-not-allowed disabled:text-zinc-600"
-                          >
-                            <RefreshCw
-                              className={`h-3.5 w-3.5 ${
-                                portfolioRouteLoading ? "animate-spin" : ""
-                              }`}
-                            />
-                            Refresh
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              toast("Coming Soon");
-                            }}
-                            className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/60 bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
-                          >
-                            Deposit
-                          </button>
-                        </div>
                       </div>
 
                       {portfolioRouteError ? (
@@ -5602,24 +6489,623 @@ export default function CryptoDashboard() {
                     </div>
                   ) : (
                     <>
-                      <div>
-                        <h1 className="text-[22px] font-semibold text-zinc-100">
-                          Risk Analysis
-                        </h1>
-                        <p className="mt-1 text-sm text-zinc-500">
-                          Analyze concentration, volatility, and drawdown risk
-                          across your portfolio.
-                        </p>
+                      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                        <div>
+                          <h1 className="text-[22px] font-semibold text-zinc-100">
+                            Risk Analysis
+                          </h1>
+                          <p className="mt-1 text-sm text-zinc-500">
+                            Live Alpaca account data from your configured API
+                            credentials.
+                          </p>
+                        </div>
                       </div>
 
-                      <div className="rounded-[20px] border border-white/[0.08] bg-[#0a0a0a] px-5 py-6">
-                        <p className="text-sm text-zinc-300">
-                          Risk analytics is being prepared. Connect your
-                          portfolio and visit this tab to view position
-                          concentration, scenario stress tests, and downside
-                          exposure metrics.
-                        </p>
-                      </div>
+                      {portfolioRouteError ? (
+                        <div className="border border-red-500/20 bg-red-500/5 px-4 py-4 text-sm text-red-300">
+                          {portfolioRouteError}
+                        </div>
+                      ) : portfolioRouteLoading && !portfolioData ? (
+                        <div className="flex items-center gap-3 border border-white/[0.07] bg-[#0a0a0a] px-4 py-8 text-sm text-zinc-500">
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          Loading Alpaca account data…
+                        </div>
+                      ) : portfolioData ? (
+                        <div className="space-y-4">
+                          <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+                            <section
+                              className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="text-xs font-medium text-zinc-500">
+                                    Net Worth
+                                  </p>
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className="text-[28px] font-semibold leading-none tracking-tight text-zinc-100 tabular-nums md:text-[32px]">
+                                      $
+                                      {Math.round(
+                                        portfolioData.summary.equity,
+                                      ).toLocaleString("en-US")}
+                                    </p>
+                                    <p
+                                      className={`text-[16px] font-medium leading-none tabular-nums md:text-[18px] ${
+                                        portfolioNetWorthChange >= 0
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {portfolioNetWorthChange >= 0 ? "+" : "-"}
+                                      $
+                                      {Math.abs(
+                                        Math.round(portfolioNetWorthChange),
+                                      ).toLocaleString("en-US")}
+                                    </p>
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 text-[13px] font-medium leading-none tabular-nums md:text-[14px] ${
+                                        portfolioNetWorthChangePct >= 0
+                                          ? "bg-emerald-500/12 text-emerald-400"
+                                          : "bg-red-500/12 text-red-400"
+                                      }`}
+                                    >
+                                      {portfolioNetWorthChangePct >= 0
+                                        ? "+"
+                                        : "-"}
+                                      {Math.abs(
+                                        portfolioNetWorthChangePct,
+                                      ).toFixed(2)}
+                                      %
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void fetchPortfolioRouteData();
+                                  }}
+                                  disabled={portfolioRouteLoading}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.02] text-zinc-400 transition-colors hover:border-white/[0.2] hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-600"
+                                  aria-label="Refresh portfolio overview"
+                                >
+                                  <RefreshCw
+                                    className={`h-3.5 w-3.5 ${
+                                      portfolioRouteLoading
+                                        ? "animate-spin"
+                                        : ""
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+
+                              <div className="mt-3 grid gap-2.5 md:grid-cols-3">
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Claimable
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    $
+                                    {Math.round(
+                                      portfolioData.summary.cash,
+                                    ).toLocaleString("en-US")}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Total Assets
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    $
+                                    {Math.round(
+                                      portfolioData.summary.equity,
+                                    ).toLocaleString("en-US")}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Total Liabilities
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    $
+                                    {Math.round(
+                                      portfolioLiabilities,
+                                    ).toLocaleString("en-US")}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="mt-3">
+                                <p className="text-xs font-medium text-zinc-300">
+                                  Risk Profile
+                                </p>
+                                <div className="mt-1.5 overflow-hidden rounded-md border border-white/[0.08] bg-white/[0.02]">
+                                  <div className="flex h-3.5 w-full">
+                                    {portfolioAllocationSlices.map((slice) => (
+                                      <span
+                                        key={`risk-${slice.label}`}
+                                        className="h-full"
+                                        style={{
+                                          width: `${slice.pct}%`,
+                                          backgroundColor: slice.color,
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                                  {portfolioAllocationSlices.map((slice) => (
+                                    <div
+                                      key={`risk-legend-${slice.label}`}
+                                      className="min-w-[70px]"
+                                    >
+                                      <div className="flex items-center gap-1">
+                                        <span
+                                          className="h-1.5 w-1.5 rounded-full"
+                                          style={{
+                                            backgroundColor: slice.color,
+                                          }}
+                                        />
+                                        <span className="text-[11px] text-zinc-200">
+                                          {slice.label}
+                                        </span>
+                                      </div>
+                                      <p className="pl-2.5 text-[11px] tabular-nums text-zinc-500">
+                                        {slice.pct.toFixed(2)}%
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </section>
+
+                            <section
+                              className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                            >
+                              <h2 className="text-[16px] font-semibold text-zinc-100 md:text-[18px]">
+                                Portfolio Allocation
+                              </h2>
+
+                              <div className="mt-2.5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="mx-auto shrink-0 md:mx-0">
+                                  <PortfolioAllocationDonut
+                                    slices={portfolioAllocationSlices}
+                                    total={portfolioData.summary.equity}
+                                  />
+                                </div>
+
+                                <div className="space-y-1 md:min-w-[150px]">
+                                  {portfolioAllocationSlices.map((slice) => (
+                                    <div
+                                      key={`allocation-${slice.label}`}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-zinc-200">
+                                        <span
+                                          className="h-2 w-2 rounded-full"
+                                          style={{
+                                            backgroundColor: slice.color,
+                                          }}
+                                        />
+                                        <span className="truncate">
+                                          {slice.label}
+                                        </span>
+                                      </span>
+                                      <span className="text-[12px] font-semibold tabular-nums text-zinc-100">
+                                        {slice.pct.toFixed(2)}%
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </section>
+                          </div>
+
+                          <section
+                            className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <h2 className="text-[16px] font-semibold text-zinc-100 md:text-[18px]">
+                                Allocation Simulator
+                              </h2>
+                              <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                                Scroll to analyze
+                              </span>
+                            </div>
+
+                            <div className="mt-3 grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(290px,0.85fr)]">
+                              <div className="flex h-full flex-col gap-3">
+                                {trackedAssetMetrics.map((asset, index) => {
+                                  const simulatedPct =
+                                    simulatedTrackedWeights[asset.symbol] ?? 0;
+                                  const draftTargetPct =
+                                    allocationSimulatorTargets[asset.symbol] ??
+                                    asset.currentAllocationPct ??
+                                    0;
+                                  const showNormalizationHint =
+                                    rawDraftTotal > 100 &&
+                                    index === trackedAssetMetrics.length - 1;
+
+                                  return (
+                                    <div
+                                      key={`allocation-sim-${asset.symbol}`}
+                                      className="flex min-h-[150px] flex-1 flex-col justify-between rounded-xl border border-white/8 bg-white/2 px-3 py-2.5"
+                                    >
+                                      <div>
+                                        <div className="flex items-center justify-between gap-2">
+                                          <p className="text-[13px] font-medium text-zinc-100">
+                                            {asset.symbol}:{" "}
+                                            {asset.currentAllocationPct.toFixed(
+                                              1,
+                                            )}
+                                            % → {simulatedPct.toFixed(1)}%
+                                          </p>
+                                          <span className="text-[12px] tabular-nums text-zinc-300">
+                                            Target {draftTargetPct.toFixed(1)}%
+                                          </span>
+                                        </div>
+                                        <input
+                                          type="range"
+                                          min={0}
+                                          max={100}
+                                          step={0.5}
+                                          value={draftTargetPct}
+                                          onChange={(event) => {
+                                            const rawValue = Number(
+                                              event.target.value,
+                                            );
+                                            const nextValue = Number.isFinite(
+                                              rawValue,
+                                            )
+                                              ? Math.min(
+                                                  100,
+                                                  Math.max(0, rawValue),
+                                                )
+                                              : 0;
+
+                                            setAllocationSimulatorTouched(true);
+                                            setAllocationSimulatorTargets(
+                                              (prev) => ({
+                                                ...prev,
+                                                [asset.symbol]: nextValue,
+                                              }),
+                                            );
+                                          }}
+                                          className="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-emerald-400"
+                                        />
+                                        <p className="mt-1.5 text-[11px] text-zinc-500">
+                                          Expected return{" "}
+                                          {pct(asset.metrics.expectedReturnPct)}{" "}
+                                          · Vol{" "}
+                                          {asset.metrics.volatilityPct.toFixed(
+                                            1,
+                                          )}
+                                          % · Max DD{" "}
+                                          {asset.metrics.maxDrawdownPct.toFixed(
+                                            1,
+                                          )}
+                                          %
+                                        </p>
+                                      </div>
+
+                                      {showNormalizationHint ? (
+                                        <p className="mt-2 text-[11px] text-amber-300">
+                                          Combined slider targets exceed 100%,
+                                          so weights are normalized
+                                          proportionally.
+                                        </p>
+                                      ) : (
+                                        <span className="mt-2 block h-[16px]" />
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              <div className="space-y-2.5">
+                                <div className="rounded-xl border border-white/8 bg-white/2 px-3 py-2.5">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                                    Current Portfolio
+                                  </p>
+                                  <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px]">
+                                    <p className="text-zinc-400">Return</p>
+                                    <p className="text-right font-medium tabular-nums text-zinc-100">
+                                      {pct(currentPortfolioReturnFromPortfolio)}
+                                    </p>
+                                    <p className="text-zinc-400">Risk</p>
+                                    <p className="text-right font-medium text-zinc-100">
+                                      {currentPortfolioRiskLabel}
+                                    </p>
+                                    <p className="text-zinc-400">
+                                      Max Drawdown
+                                    </p>
+                                    <p className="text-right font-medium tabular-nums text-zinc-100">
+                                      {currentPortfolioDrawdownFromPortfolio.toFixed(
+                                        1,
+                                      )}
+                                      %
+                                    </p>
+                                    <p className="text-zinc-400">
+                                      Sharpe (advanced)
+                                    </p>
+                                    <p className="text-right font-medium tabular-nums text-zinc-100">
+                                      {currentPortfolioSharpeFromPortfolio.toFixed(
+                                        2,
+                                      )}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2.5">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-emerald-300">
+                                    Simulated Portfolio
+                                  </p>
+                                  <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px]">
+                                    <p className="text-emerald-100/80">
+                                      Return
+                                    </p>
+                                    <p className="text-right font-medium tabular-nums text-emerald-100">
+                                      {pct(
+                                        simulatedPortfolioDisplay.expectedReturnPct,
+                                      )}
+                                    </p>
+                                    <p className="text-emerald-100/80">Risk</p>
+                                    <p className="text-right font-medium text-emerald-100">
+                                      {simulatedPortfolioDisplay.riskLabel}
+                                    </p>
+                                    <p className="text-emerald-100/80">
+                                      Max Drawdown
+                                    </p>
+                                    <p className="text-right font-medium tabular-nums text-emerald-100">
+                                      {simulatedPortfolioDisplay.maxDrawdownPct.toFixed(
+                                        1,
+                                      )}
+                                      %
+                                    </p>
+                                    <p className="text-emerald-100/80">
+                                      Sharpe (advanced)
+                                    </p>
+                                    <p className="text-right font-medium tabular-nums text-emerald-100">
+                                      {simulatedPortfolioDisplay.sharpe.toFixed(
+                                        2,
+                                      )}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="grid gap-2 md:grid-cols-3">
+                                  <div className="rounded-lg border border-white/8 bg-white/2 px-2.5 py-2">
+                                    <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-500">
+                                      Net PnL Impact
+                                    </p>
+                                    <p
+                                      className={`mt-1 text-[13px] font-medium tabular-nums ${
+                                        impactDisplay.netPnlImpact >= 0
+                                          ? "text-emerald-300"
+                                          : "text-red-300"
+                                      }`}
+                                    >
+                                      {impactDisplay.netPnlImpact >= 0
+                                        ? "+"
+                                        : "-"}
+                                      {fmtBig(
+                                        Math.abs(impactDisplay.netPnlImpact),
+                                      )}
+                                    </p>
+                                  </div>
+
+                                  <div className="rounded-lg border border-white/8 bg-white/2 px-2.5 py-2">
+                                    <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-500">
+                                      Risk Reduction
+                                    </p>
+                                    <p
+                                      className={`mt-1 text-[13px] font-medium tabular-nums ${
+                                        impactDisplay.riskReductionPct >= 0
+                                          ? "text-emerald-300"
+                                          : "text-red-300"
+                                      }`}
+                                    >
+                                      {impactDisplay.riskReductionPct >= 0
+                                        ? "+"
+                                        : ""}
+                                      {impactDisplay.riskReductionPct.toFixed(
+                                        1,
+                                      )}
+                                      %
+                                    </p>
+                                  </div>
+
+                                  <div className="rounded-lg border border-white/8 bg-white/2 px-2.5 py-2">
+                                    <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-500">
+                                      Profile Shift
+                                    </p>
+                                    <span
+                                      className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${safetyStanceToneClass}`}
+                                    >
+                                      {safetyStanceForDisplay} vs Aggressive
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl border border-white/8 bg-white/2 px-3 py-2.5">
+                                  <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                                    AI Recommendations
+                                  </p>
+                                  {recommendationsDisplay.length > 0 ? (
+                                    <div className="mt-2 space-y-1.5">
+                                      {recommendationsDisplay.map(
+                                        (recommendation) => (
+                                          <p
+                                            key={recommendation}
+                                            className="text-[12px] leading-5 text-zinc-300"
+                                          >
+                                            {recommendation}
+                                          </p>
+                                        ),
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-[12px] text-zinc-500">
+                                      Scroll after changing allocations to
+                                      analyze and generate recommendations.
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </section>
+
+                          <section className="space-y-3">
+                            <h2 className="text-sm font-medium text-zinc-200">
+                              Portfolio Assets
+                            </h2>
+
+                            {riskAnalysisAssetCards.length === 0 ? (
+                              <div className="rounded-[20px] border border-white/[0.08] bg-[#0a0a0a] px-4 py-5 text-sm text-zinc-500">
+                                No portfolio assets available.
+                              </div>
+                            ) : (
+                              <div className="grid gap-3 md:grid-cols-3">
+                                {riskAnalysisAssetCards.map((asset) => (
+                                  <div
+                                    key={asset.id}
+                                    className="rounded-[20px] border border-white/[0.07] bg-[#0a0a0a] p-4"
+                                  >
+                                    <div className="mb-3 flex items-center justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="truncate text-[15px] font-semibold text-zinc-100">
+                                          {asset.symbol}
+                                        </p>
+                                        <p className="truncate text-[12px] uppercase tracking-wide text-zinc-500">
+                                          Qty{" "}
+                                          {asset.qty.toLocaleString("en-US")}
+                                        </p>
+                                      </div>
+                                      <span
+                                        className={`inline-flex items-center gap-1 text-[13px] font-medium tabular-nums ${
+                                          asset.positive
+                                            ? "text-emerald-400"
+                                            : "text-red-400"
+                                        }`}
+                                      >
+                                        {asset.positive ? (
+                                          <ArrowUpRight className="h-3 w-3" />
+                                        ) : (
+                                          <ArrowDownRight className="h-3 w-3" />
+                                        )}
+                                        {Math.abs(asset.notableMovePct).toFixed(
+                                          2,
+                                        )}
+                                        %
+                                      </span>
+                                    </div>
+
+                                    {asset.sparkline.length > 1 && (
+                                      <CardSparkline
+                                        data={asset.sparkline}
+                                        positive={asset.positive}
+                                        height={78}
+                                      />
+                                    )}
+
+                                    <p className="mt-3 text-[11px] uppercase tracking-[0.16em] text-white">
+                                      Notable Price Movement
+                                    </p>
+
+                                    {(() => {
+                                      const assetNews =
+                                        riskAnalysisNewsBySymbol[
+                                          asset.symbol.toUpperCase()
+                                        ] ?? [];
+                                      const timeline =
+                                        buildNotablePriceTimeline(assetNews);
+
+                                      if (timeline.length === 0) {
+                                        return (
+                                          <p className="mt-2 text-[13px] leading-6 text-zinc-400">
+                                            {riskAnalysisNewsLoading
+                                              ? "Analyzing up to 30 articles for notable movement..."
+                                              : `${asset.symbol} is trading near ${fmt(asset.currentPrice)} with ${asset.positive ? "+" : "-"}${Math.abs(asset.notableMovePct).toFixed(2)}% movement. Position value is ${fmtBig(asset.marketValue)}.`}
+                                          </p>
+                                        );
+                                      }
+
+                                      return (
+                                        <div className="mt-2 max-h-[380px] space-y-0.5 overflow-y-auto pr-1">
+                                          {timeline.map((entry, index) => {
+                                            const isLast =
+                                              index === timeline.length - 1;
+
+                                            return (
+                                              <div
+                                                key={`${asset.id}-${entry.label}`}
+                                                className={`relative pl-7 ${
+                                                  isLast ? "" : "pb-3"
+                                                }`}
+                                              >
+                                                {!isLast && (
+                                                  <span className="absolute left-2 top-5 bottom-0 w-px bg-white/12" />
+                                                )}
+                                                <span
+                                                  className={`absolute left-0 top-1.5 h-4 w-4 rounded-full border ${
+                                                    index === 0
+                                                      ? "border-emerald-400/60 bg-emerald-400/20"
+                                                      : "border-white/20 bg-white/5"
+                                                  }`}
+                                                />
+
+                                                <div className="rounded-xl border border-white/6 bg-white/2 px-3 py-2">
+                                                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                                                    {entry.label}
+                                                  </p>
+                                                  {index === 0 && (
+                                                    <div className="mt-1 flex items-center gap-2 text-sm">
+                                                      <span className="font-semibold tabular-nums text-zinc-100">
+                                                        {fmt(
+                                                          asset.currentPrice,
+                                                        )}
+                                                      </span>
+                                                      <span
+                                                        className={`inline-flex items-center gap-1 tabular-nums ${
+                                                          asset.positive
+                                                            ? "text-emerald-400"
+                                                            : "text-red-400"
+                                                        }`}
+                                                      >
+                                                        {asset.positive ? (
+                                                          <ArrowUpRight className="h-3 w-3" />
+                                                        ) : (
+                                                          <ArrowDownRight className="h-3 w-3" />
+                                                        )}
+                                                        {Math.abs(
+                                                          asset.notableMovePct,
+                                                        ).toFixed(1)}
+                                                        %
+                                                      </span>
+                                                    </div>
+                                                  )}
+                                                  <p className="mt-1.5 text-[13px] leading-6 text-zinc-400">
+                                                    {entry.summary}
+                                                  </p>
+                                                  <p className="mt-1 text-[11px] text-zinc-500">
+                                                    {entry.citedCount} cited of{" "}
+                                                    {entry.analyzedCount}{" "}
+                                                    articles analyzed
+                                                  </p>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </section>
+                        </div>
+                      ) : null}
                     </>
                   )}
                 </section>
