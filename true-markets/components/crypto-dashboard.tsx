@@ -3525,6 +3525,7 @@ export default function CryptoDashboard() {
     useState(false);
   const [allocationSimulationResult, setAllocationSimulationResult] =
     useState<AllocationSimulationResult | null>(null);
+  const [autoConnectingPortfolio, setAutoConnectingPortfolio] = useState(false);
   const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(
     null,
   );
@@ -3551,6 +3552,7 @@ export default function CryptoDashboard() {
   const predictionsSectionRef = useRef<HTMLElement>(null);
   const watchlistDraftIdsRef = useRef<string[]>(watchlistDraftIds);
   const allocationAutoAnalyzeTriggeredRef = useRef(false);
+  const portfolioAutoConnectTimerRef = useRef<number | null>(null);
   const deferredPredictionSearch = useDeferredValue(predictionSearch);
 
   const fetchData = useCallback(
@@ -3676,6 +3678,55 @@ export default function CryptoDashboard() {
       setPortfolioGateReady(true);
     }
   }, []);
+
+  const handleConnectPortfolio = useCallback(() => {
+    try {
+      window.localStorage.setItem(PORTFOLIO_CONNECTED_STORAGE_KEY, "1");
+    } catch {
+      // Ignore localStorage failures and still continue in-memory for this session.
+    }
+
+    setPortfolioConnected(true);
+  }, []);
+
+  useEffect(() => {
+    const shouldAutoConnect =
+      portfolioGateReady &&
+      !portfolioConnected &&
+      (pathname === "/portfolio" || pathname === "/risk-analysis");
+
+    if (!shouldAutoConnect) {
+      setAutoConnectingPortfolio(false);
+      if (portfolioAutoConnectTimerRef.current !== null) {
+        window.clearTimeout(portfolioAutoConnectTimerRef.current);
+        portfolioAutoConnectTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (portfolioAutoConnectTimerRef.current !== null) return;
+
+    setAutoConnectingPortfolio(true);
+    toast("Auto-connecting Shreyansh's account");
+
+    portfolioAutoConnectTimerRef.current = window.setTimeout(() => {
+      portfolioAutoConnectTimerRef.current = null;
+      setAutoConnectingPortfolio(false);
+      handleConnectPortfolio();
+    }, 5000);
+
+    return () => {
+      if (portfolioAutoConnectTimerRef.current !== null) {
+        window.clearTimeout(portfolioAutoConnectTimerRef.current);
+        portfolioAutoConnectTimerRef.current = null;
+      }
+    };
+  }, [
+    pathname,
+    portfolioGateReady,
+    portfolioConnected,
+    handleConnectPortfolio,
+  ]);
 
   useEffect(() => {
     if (showChat) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -4169,16 +4220,6 @@ export default function CryptoDashboard() {
     setWatchlistAssetSearch("");
     setWatchlistModalOpen(true);
   }, [watchlistAssetIds]);
-
-  const handleConnectPortfolio = useCallback(() => {
-    try {
-      window.localStorage.setItem(PORTFOLIO_CONNECTED_STORAGE_KEY, "1");
-    } catch {
-      // Ignore localStorage failures and still continue in-memory for this session.
-    }
-
-    setPortfolioConnected(true);
-  }, []);
 
   const handleSetAlert = useCallback(() => {
     toast("Coming Soon");
@@ -6124,15 +6165,23 @@ export default function CryptoDashboard() {
                         <button
                           type="button"
                           onClick={handleConnectPortfolio}
-                          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.22] bg-white px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200"
+                          disabled={autoConnectingPortfolio}
+                          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.22] bg-white px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-75"
                         >
-                          Connect Account
+                          {autoConnectingPortfolio ? (
+                            <>
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                              Auto-connecting Shreyansh&apos;s account
+                            </>
+                          ) : (
+                            "Connect Account"
+                          )}
                         </button>
                       </div>
 
                       <p className="mt-3 text-xs text-zinc-500">
-                        Portolio Connect show's Shreyansh Saurabhs's Alpaca
-                        Account
+                        Portfolio Connect shows Shreyansh Saurabh&apos;s Alpaca
+                        account
                       </p>
                     </div>
                   ) : (
@@ -6143,8 +6192,8 @@ export default function CryptoDashboard() {
                             Portfolio
                           </h1>
                           <p className="mt-1 text-sm text-zinc-500">
-                            Live Alpaca account data from Shreyansh's account
-                            credentials.
+                            Live Alpaca account data from Shreyansh&apos;s
+                            account credentials.
                           </p>
                         </div>
                       </div>
@@ -6556,15 +6605,23 @@ export default function CryptoDashboard() {
                         <button
                           type="button"
                           onClick={handleConnectPortfolio}
-                          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.22] bg-white px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200"
+                          disabled={autoConnectingPortfolio}
+                          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.22] bg-white px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-75"
                         >
-                          Connect Account
+                          {autoConnectingPortfolio ? (
+                            <>
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                              Auto-connecting Shreyansh&apos;s account
+                            </>
+                          ) : (
+                            "Connect Account"
+                          )}
                         </button>
                       </div>
 
                       <p className="mt-3 text-xs text-zinc-500">
-                        Portfolio Connect show's Shreyansh Saurabhs's Alpaca
-                        Account
+                        Portfolio Connect shows Shreyansh Saurabh&apos;s Alpaca
+                        account
                       </p>
                     </div>
                   ) : (
@@ -6575,8 +6632,8 @@ export default function CryptoDashboard() {
                             Risk Analysis
                           </h1>
                           <p className="mt-1 text-sm text-zinc-500">
-                            Live Alpaca account data from Shreyansh's account
-                            credentials.
+                            Live Alpaca account data from Shreyansh&apos;s
+                            account credentials.
                           </p>
                         </div>
                       </div>
