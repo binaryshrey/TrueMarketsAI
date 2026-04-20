@@ -111,7 +111,10 @@ const SYMBOL_TO_COINGECKO: Record<string, string> = {
 };
 
 function normalizeSymbol(sym: string): string {
-  return sym.replace(/\/USD$/i, "").replace(/USD$/i, "").toUpperCase();
+  return sym
+    .replace(/\/USD$/i, "")
+    .replace(/USD$/i, "")
+    .toUpperCase();
 }
 
 function toAlpacaSymbol(sym: string): string {
@@ -121,7 +124,11 @@ function toAlpacaSymbol(sym: string): string {
 
 async function fetchPrices(symbols: string[]): Promise<PriceMap> {
   const geckoIds = symbols
-    .map((s) => SYMBOL_TO_COINGECKO[s.toUpperCase()] || SYMBOL_TO_COINGECKO[normalizeSymbol(s)])
+    .map(
+      (s) =>
+        SYMBOL_TO_COINGECKO[s.toUpperCase()] ||
+        SYMBOL_TO_COINGECKO[normalizeSymbol(s)],
+    )
     .filter(Boolean);
 
   if (geckoIds.length === 0) return {};
@@ -143,7 +150,8 @@ async function fetchPrices(symbols: string[]): Promise<PriceMap> {
   const prices: PriceMap = {};
   for (const sym of symbols) {
     const base = normalizeSymbol(sym);
-    const geckoId = SYMBOL_TO_COINGECKO[sym.toUpperCase()] || SYMBOL_TO_COINGECKO[base];
+    const geckoId =
+      SYMBOL_TO_COINGECKO[sym.toUpperCase()] || SYMBOL_TO_COINGECKO[base];
     if (geckoId && data[geckoId]?.usd) {
       prices[base] = data[geckoId].usd;
     }
@@ -152,7 +160,12 @@ async function fetchPrices(symbols: string[]): Promise<PriceMap> {
 }
 
 async function fetchAlpacaPositions(): Promise<
-  Array<{ symbol: string; qty: number; market_value: number; current_price: number }>
+  Array<{
+    symbol: string;
+    qty: number;
+    market_value: number;
+    current_price: number;
+  }>
 > {
   if (!hasAlpacaCredentials()) return [];
   const { keyId, secretKey, orderUrl } = getAlpacaServerConfig();
@@ -181,7 +194,11 @@ async function fetchAlpacaPositions(): Promise<
   }));
 }
 
-async function fetchAlpacaAccount(): Promise<{ equity: number; cash: number; buying_power: number }> {
+async function fetchAlpacaAccount(): Promise<{
+  equity: number;
+  cash: number;
+  buying_power: number;
+}> {
   if (!hasAlpacaCredentials()) return { equity: 0, cash: 0, buying_power: 0 };
   const { keyId, secretKey, orderUrl } = getAlpacaServerConfig();
   const base = new URL(orderUrl);
@@ -210,7 +227,12 @@ async function placeAlpacaOrder(
   symbol: string,
   side: "buy" | "sell",
   notional: number,
-): Promise<{ id: string; status: string; filled_qty: string; filled_avg_price: string }> {
+): Promise<{
+  id: string;
+  status: string;
+  filled_qty: string;
+  filled_avg_price: string;
+}> {
   const { keyId, secretKey, orderUrl } = getAlpacaServerConfig();
 
   const payload: Record<string, string> = {
@@ -350,13 +372,15 @@ async function fetchTmBalances(): Promise<TmBalance[]> {
   return balances;
 }
 
-async function enrichTmBalancesWithPrices(balances: TmBalance[]): Promise<TmBalance[]> {
+async function enrichTmBalancesWithPrices(
+  balances: TmBalance[],
+): Promise<TmBalance[]> {
   const nonStable = balances.filter((b) => !b.stable && b.balance > 0);
   const symbols = nonStable.map((b) => b.symbol);
   const prices = symbols.length > 0 ? await fetchTmPrices(symbols) : {};
 
   return balances.map((b) => {
-    const price = b.stable ? 1 : (prices[b.symbol] || 0);
+    const price = b.stable ? 1 : prices[b.symbol] || 0;
     return {
       ...b,
       price_usd: price,
@@ -370,7 +394,11 @@ async function placeTmOrder(
   side: "buy" | "sell",
   amountUsd: number,
   currentPrice?: number,
-): Promise<{ orderId: string; txHash: string; dryRun?: { qty: string; qtyOut: string; fee: string } }> {
+): Promise<{
+  orderId: string;
+  txHash: string;
+  dryRun?: { qty: string; qtyOut: string; fee: string };
+}> {
   const base = normalizeSymbol(symbol);
 
   // Buy: use --qty-unit quote (spend X USDC)
@@ -385,7 +413,9 @@ async function placeTmOrder(
     // For sells, convert USD amount to token quantity
     const price = currentPrice || 0;
     if (price <= 0) {
-      throw new Error(`Cannot sell ${base}: no price available to compute token quantity`);
+      throw new Error(
+        `Cannot sell ${base}: no price available to compute token quantity`,
+      );
     }
     const tokenQty = Math.abs(amountUsd) / price;
     amount = tokenQty.toPrecision(8);
@@ -393,11 +423,23 @@ async function placeTmOrder(
   }
 
   // Dry run first
-  const dryStdout = await tmCli([side, base, amount, "--qty-unit", qtyUnit, "--dry-run", "-o", "json", "--force"]);
+  const dryStdout = await tmCli([
+    side,
+    base,
+    amount,
+    "--qty-unit",
+    qtyUnit,
+    "--dry-run",
+    "-o",
+    "json",
+    "--force",
+  ]);
   const dryData = JSON.parse(dryStdout);
 
   if (dryData.issues && dryData.issues.length > 0) {
-    throw new Error(`TM ${side} dry-run issues: ${JSON.stringify(dryData.issues)}`);
+    throw new Error(
+      `TM ${side} dry-run issues: ${JSON.stringify(dryData.issues)}`,
+    );
   }
 
   const dryRun = {
@@ -407,7 +449,16 @@ async function placeTmOrder(
   };
 
   // Execute
-  const execStdout = await tmCli([side, base, amount, "--qty-unit", qtyUnit, "--force", "-o", "json"]);
+  const execStdout = await tmCli([
+    side,
+    base,
+    amount,
+    "--qty-unit",
+    qtyUnit,
+    "--force",
+    "-o",
+    "json",
+  ]);
   const execData = JSON.parse(execStdout);
 
   if (execData.error) {
@@ -419,6 +470,247 @@ async function placeTmOrder(
     txHash: String(execData.tx_hash || ""),
     dryRun,
   };
+}
+
+/* ── Email report via Resend ── */
+
+async function sendExecutionReport(
+  workflow: Workflow,
+  preTradeData: Record<string, unknown> | null,
+  postTradeData: Record<string, unknown> | null,
+  runId: string,
+  status: "completed" | "failed",
+  errorMsg?: string,
+) {
+  const resendKey = process.env.RESEND_API_KEY;
+  if (!resendKey) return;
+
+  const to = "ss21034@nyu.edu";
+  const pre = preTradeData as Record<string, unknown> | null;
+  const post = postTradeData as Record<string, unknown> | null;
+  const drifts = (pre?.drifts ?? []) as Array<Record<string, unknown>>;
+  const prices = (pre?.prices ?? {}) as Record<string, number>;
+  const orders = (post?.orders ?? []) as Array<Record<string, unknown>>;
+  const estDrifts = (post?.estimatedDrifts ?? []) as Array<
+    Record<string, unknown>
+  >;
+
+  const isSuccess = status === "completed";
+  const statusColor = isSuccess ? "#22c55e" : "#ef4444";
+  const statusLabel = isSuccess ? "COMPLETED" : "FAILED";
+
+  const priceRows = Object.entries(prices)
+    .map(
+      ([sym, p]) =>
+        `<tr><td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px">${sym}</td><td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px;text-align:right">$${Number(p).toLocaleString()}</td></tr>`,
+    )
+    .join("");
+
+  const driftRows = drifts
+    .map((d) => {
+      const drift = Number(d.driftPct) || 0;
+      const driftColor =
+        Math.abs(drift) > 5
+          ? "#ef4444"
+          : Math.abs(drift) > 2
+            ? "#facc15"
+            : "#22c55e";
+      return `<tr>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px">${d.symbol}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#a1a1aa;font-size:13px;text-align:right">${d.targetPct}%</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px;text-align:right">${Number(d.currentPct).toFixed(1)}%</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:${driftColor};font-size:13px;font-weight:600;text-align:right">${drift > 0 ? "+" : ""}${drift.toFixed(1)}%</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:${Number(d.diffUsd) > 0 ? "#22c55e" : "#ef4444"};font-size:13px;text-align:right">${Number(d.diffUsd) > 0 ? "Buy" : "Sell"} $${Math.abs(Number(d.diffUsd)).toFixed(2)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const orderRows =
+    orders.length > 0
+      ? orders
+          .map((o) => {
+            const sideColor = o.side === "buy" ? "#22c55e" : "#ef4444";
+            const statusCol = o.status === "failed" ? "#ef4444" : "#22c55e";
+            return `<tr>
+            <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px">${o.symbol}</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:${sideColor};font-size:13px;font-weight:600;text-transform:uppercase">${o.side}</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px;text-align:right">$${Number(o.notional).toFixed(2)}</td>
+            <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:${statusCol};font-size:13px;text-transform:uppercase">${o.status}</td>
+          </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="4" style="padding:12px;color:#71717a;font-size:13px">No trades executed</td></tr>`;
+
+  const postDriftRows = estDrifts
+    .map((d) => {
+      const drift = Number(d.newDriftPct) || 0;
+      const color = Math.abs(drift) > 2 ? "#facc15" : "#22c55e";
+      return `<tr>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px">${d.symbol}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#a1a1aa;font-size:13px;text-align:right">${d.targetPct}%</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:#e4e4e7;font-size:13px;text-align:right">${Number(d.newPct).toFixed(1)}%</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #1a1a2e;color:${color};font-size:13px;font-weight:600;text-align:right">${drift > 0 ? "+" : ""}${drift.toFixed(1)}%</td>
+      </tr>`;
+    })
+    .join("");
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#09090b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  <div style="max-width:640px;margin:0 auto;padding:24px">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#0c0c10 0%,#171720 100%);border:1px solid #27272a;border-radius:16px;padding:24px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="background:${statusColor}20;color:${statusColor};padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:0.05em">${statusLabel}</span>
+        <span style="color:#71717a;font-size:12px">Run ${runId.slice(0, 8)}...</span>
+      </div>
+      <h1 style="color:#fafafa;font-size:22px;font-weight:700;margin:0">${workflow.name}</h1>
+      <p style="color:#71717a;font-size:13px;margin:6px 0 0">
+        ${workflow.venue} · ${workflow.mode} mode · ${workflow.engine_type === "truesignal" ? workflow.ai_model || "Claude Sonnet 4.5" : "Custom Script"} · ${new Date().toLocaleString("en-US")}
+      </p>
+      ${errorMsg ? `<p style="color:#ef4444;font-size:13px;margin:8px 0 0">Error: ${errorMsg}</p>` : ""}
+    </div>
+
+    ${
+      pre
+        ? `
+    <!-- Pre-Trade Analysis -->
+    <div style="background:#0c0c10;border:1px solid #27272a;border-radius:16px;padding:20px;margin-bottom:16px">
+      <h2 style="color:#8b5cf6;font-size:14px;font-weight:700;margin:0 0 4px;letter-spacing:0.03em">PRE-TRADE ANALYSIS</h2>
+      <div style="display:flex;gap:16px;margin:12px 0">
+        <div style="flex:1;background:#1a1a2e;border-radius:10px;padding:12px">
+          <p style="color:#71717a;font-size:11px;margin:0">Portfolio Value</p>
+          <p style="color:#fafafa;font-size:18px;font-weight:700;margin:4px 0 0">$${Number(pre.portfolioValue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+        </div>
+        <div style="flex:1;background:#1a1a2e;border-radius:10px;padding:12px">
+          <p style="color:#71717a;font-size:11px;margin:0">Max Drift</p>
+          <p style="color:${Number(pre.maxDrift) > 5 ? "#ef4444" : "#facc15"};font-size:18px;font-weight:700;margin:4px 0 0">${Number(pre.maxDrift).toFixed(2)}%</p>
+        </div>
+        <div style="flex:1;background:#1a1a2e;border-radius:10px;padding:12px">
+          <p style="color:#71717a;font-size:11px;margin:0">Assets</p>
+          <p style="color:#fafafa;font-size:18px;font-weight:700;margin:4px 0 0">${drifts.length}</p>
+        </div>
+      </div>
+
+      <p style="color:#71717a;font-size:11px;font-weight:600;letter-spacing:0.08em;margin:16px 0 6px">MARKET PRICES</p>
+      <table style="width:100%;border-collapse:collapse;background:#111118;border-radius:8px;overflow:hidden">
+        ${priceRows}
+      </table>
+
+      <p style="color:#71717a;font-size:11px;font-weight:600;letter-spacing:0.08em;margin:16px 0 6px">ALLOCATION DRIFT</p>
+      <table style="width:100%;border-collapse:collapse;background:#111118;border-radius:8px;overflow:hidden">
+        <tr style="background:#1a1a2e">
+          <th style="padding:6px 12px;text-align:left;color:#71717a;font-size:11px;font-weight:600">Asset</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Target</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Current</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Drift</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Action</th>
+        </tr>
+        ${driftRows}
+      </table>
+    </div>
+    `
+        : ""
+    }
+
+    ${
+      post
+        ? `
+    <!-- Post-Trade Analysis -->
+    <div style="background:#0c0c10;border:1px solid #27272a;border-radius:16px;padding:20px;margin-bottom:16px">
+      <h2 style="color:#f97316;font-size:14px;font-weight:700;margin:0 0 4px;letter-spacing:0.03em">POST-TRADE ANALYSIS</h2>
+      <div style="display:flex;gap:16px;margin:12px 0">
+        <div style="flex:1;background:#1a1a2e;border-radius:10px;padding:12px">
+          <p style="color:#71717a;font-size:11px;margin:0">Drift Reduction</p>
+          <p style="color:${Number(post.benefitScore) > 80 ? "#22c55e" : "#facc15"};font-size:18px;font-weight:700;margin:4px 0 0">${Number(post.benefitScore).toFixed(1)}%</p>
+        </div>
+        <div style="flex:1;background:#1a1a2e;border-radius:10px;padding:12px">
+          <p style="color:#71717a;font-size:11px;margin:0">Volume</p>
+          <p style="color:#fafafa;font-size:18px;font-weight:700;margin:4px 0 0">$${Number(post.totalTraded).toFixed(2)}</p>
+        </div>
+        <div style="flex:1;background:#1a1a2e;border-radius:10px;padding:12px">
+          <p style="color:#71717a;font-size:11px;margin:0">Fees</p>
+          <p style="color:#fafafa;font-size:18px;font-weight:700;margin:4px 0 0">$${Number(post.estimatedFees).toFixed(2)}</p>
+        </div>
+      </div>
+
+      <div style="background:#1a1a2e;border-radius:10px;padding:14px;margin:12px 0">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+          <span style="color:#71717a;font-size:11px">Before</span>
+          <span style="color:#ef4444;font-size:13px;font-weight:600">${Number(post.driftBefore).toFixed(2)}%</span>
+        </div>
+        <div style="height:6px;background:#27272a;border-radius:3px;overflow:hidden;margin-bottom:10px">
+          <div style="height:100%;width:${Math.min(Number(post.driftBefore), 100)}%;background:#ef4444;border-radius:3px"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+          <span style="color:#71717a;font-size:11px">After</span>
+          <span style="color:#22c55e;font-size:13px;font-weight:600">${Number(post.driftAfter).toFixed(2)}%</span>
+        </div>
+        <div style="height:6px;background:#27272a;border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(Number(post.driftAfter), 100)}%;background:#22c55e;border-radius:3px"></div>
+        </div>
+        <p style="text-align:center;color:#71717a;font-size:11px;margin:10px 0 0">Improvement: <span style="color:#22c55e;font-weight:600">${Number(post.driftImprovement).toFixed(2)}pts</span></p>
+      </div>
+
+      <p style="color:#71717a;font-size:11px;font-weight:600;letter-spacing:0.08em;margin:16px 0 6px">EXECUTED ORDERS (${post.successfulOrders}/${post.totalOrders})</p>
+      <table style="width:100%;border-collapse:collapse;background:#111118;border-radius:8px;overflow:hidden">
+        <tr style="background:#1a1a2e">
+          <th style="padding:6px 12px;text-align:left;color:#71717a;font-size:11px;font-weight:600">Asset</th>
+          <th style="padding:6px 12px;text-align:left;color:#71717a;font-size:11px;font-weight:600">Side</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Amount</th>
+          <th style="padding:6px 12px;text-align:left;color:#71717a;font-size:11px;font-weight:600">Status</th>
+        </tr>
+        ${orderRows}
+      </table>
+
+      ${
+        estDrifts.length > 0
+          ? `
+      <p style="color:#71717a;font-size:11px;font-weight:600;letter-spacing:0.08em;margin:16px 0 6px">POST-REBALANCE ALLOCATIONS</p>
+      <table style="width:100%;border-collapse:collapse;background:#111118;border-radius:8px;overflow:hidden">
+        <tr style="background:#1a1a2e">
+          <th style="padding:6px 12px;text-align:left;color:#71717a;font-size:11px;font-weight:600">Asset</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Target</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Actual</th>
+          <th style="padding:6px 12px;text-align:right;color:#71717a;font-size:11px;font-weight:600">Drift</th>
+        </tr>
+        ${postDriftRows}
+      </table>
+      `
+          : ""
+      }
+    </div>
+    `
+        : ""
+    }
+
+    <!-- Footer -->
+    <div style="text-align:center;padding:16px 0">
+      <p style="color:#3f3f46;font-size:11px;margin:0">TrueMarkets Rebalance Bot · Automated execution report</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "TrueMarkets <onboarding@resend.dev>",
+        to,
+        subject: `${isSuccess ? "✅" : "❌"} Rebalance ${statusLabel}: ${workflow.name}`,
+        html,
+      }),
+    });
+  } catch {
+    // Email failure should not break the workflow
+  }
 }
 
 async function generateAITradePlan(
@@ -511,7 +803,8 @@ Rules:
       }
     }
 
-    if (!Array.isArray(parsed.trades)) return generateDeterministicPlan(drifts, prices);
+    if (!Array.isArray(parsed.trades))
+      return generateDeterministicPlan(drifts, prices);
 
     return parsed.trades.map((t) => ({
       symbol: normalizeSymbol(t.symbol),
@@ -524,7 +817,10 @@ Rules:
   }
 }
 
-function generateDeterministicPlan(drifts: DriftEntry[], _prices: PriceMap): TradeOrder[] {
+function generateDeterministicPlan(
+  drifts: DriftEntry[],
+  _prices: PriceMap,
+): TradeOrder[] {
   const trades: TradeOrder[] = [];
   for (const d of drifts) {
     if (Math.abs(d.driftPct) < 1) continue;
@@ -536,7 +832,9 @@ function generateDeterministicPlan(drifts: DriftEntry[], _prices: PriceMap): Tra
     });
   }
   // Sort: sells first, then buys
-  trades.sort((a, b) => (a.side === "sell" ? -1 : 1) - (b.side === "sell" ? -1 : 1));
+  trades.sort(
+    (a, b) => (a.side === "sell" ? -1 : 1) - (b.side === "sell" ? -1 : 1),
+  );
   return trades;
 }
 
@@ -635,7 +933,13 @@ export async function POST(req: NextRequest) {
       let prices: PriceMap = {};
       let drifts: DriftEntry[] = [];
       let trades: TradeOrder[] = [];
-      let executedOrders: Array<{ symbol: string; side: string; notional: number; orderId: string; status: string }> = [];
+      let executedOrders: Array<{
+        symbol: string;
+        side: string;
+        notional: number;
+        orderId: string;
+        status: string;
+      }> = [];
       let finalStatus: "completed" | "scheduled" = "completed";
       let preTradeSnapshot: Record<string, unknown> | null = null;
       let postTradeSnapshot: Record<string, unknown> | null = null;
@@ -650,11 +954,21 @@ export async function POST(req: NextRequest) {
       try {
         /* ─── NODE 1: TRIGGER ─── */
         nodeStatus("trigger", "running");
-        log("TRIGGER", "info", "Workflow initialized, checking trigger conditions...");
+        log(
+          "TRIGGER",
+          "info",
+          "Workflow initialized, checking trigger conditions...",
+        );
 
         const allSymbols = workflow.allocations.map((a) => a.symbol);
-        const useTm = workflow.venue === "TrueMarkets" || workflow.data_source === "TrueMarkets";
-        log("TRIGGER", "info", `Fetching prices via ${useTm ? "TrueMarkets CLI" : "CoinGecko"} for: ${allSymbols.map(normalizeSymbol).join(", ")}`);
+        const useTm =
+          workflow.venue === "TrueMarkets" ||
+          workflow.data_source === "TrueMarkets";
+        log(
+          "TRIGGER",
+          "info",
+          `Fetching prices via ${useTm ? "TrueMarkets CLI" : "CoinGecko"} for: ${allSymbols.map(normalizeSymbol).join(", ")}`,
+        );
 
         try {
           prices = useTm
@@ -665,42 +979,79 @@ export async function POST(req: NextRequest) {
             .join(", ");
           log("TRIGGER", "ok", `Prices fetched: ${priceStr}`);
         } catch (e) {
-          log("TRIGGER", "error", `Failed to fetch prices: ${e instanceof Error ? e.message : "Unknown error"}`);
+          log(
+            "TRIGGER",
+            "error",
+            `Failed to fetch prices: ${e instanceof Error ? e.message : "Unknown error"}`,
+          );
           nodeStatus("trigger", "failed");
           finalStatus = "scheduled";
           throw new Error("Price fetch failed");
         }
 
         // Check trigger condition
-        if (workflow.rebalance_mode === "conditions" && workflow.condition_coin) {
+        if (
+          workflow.rebalance_mode === "conditions" &&
+          workflow.condition_coin
+        ) {
           const condCoin = normalizeSymbol(workflow.condition_coin);
           const condPrice = prices[condCoin];
           const condValue = Number(workflow.condition_value) || 0;
           const condDir = workflow.condition_direction || "above";
 
           if (workflow.condition_tab === "price") {
-            log("TRIGGER", "info", `Checking: ${condCoin} price ${condDir} $${condValue}`);
+            log(
+              "TRIGGER",
+              "info",
+              `Checking: ${condCoin} price ${condDir} $${condValue}`,
+            );
             const met =
-              condDir === "above" ? condPrice >= condValue : condPrice <= condValue;
+              condDir === "above"
+                ? condPrice >= condValue
+                : condPrice <= condValue;
             if (met) {
-              log("TRIGGER", "ok", `Condition MET: ${condCoin} = $${condPrice.toLocaleString()} (${condDir} $${condValue.toLocaleString()})`);
+              log(
+                "TRIGGER",
+                "ok",
+                `Condition MET: ${condCoin} = $${condPrice.toLocaleString()} (${condDir} $${condValue.toLocaleString()})`,
+              );
             } else {
-              log("TRIGGER", "warn", `Condition NOT met: ${condCoin} = $${condPrice.toLocaleString()} (need ${condDir} $${condValue.toLocaleString()})`);
+              log(
+                "TRIGGER",
+                "warn",
+                `Condition NOT met: ${condCoin} = $${condPrice.toLocaleString()} (need ${condDir} $${condValue.toLocaleString()})`,
+              );
               nodeStatus("trigger", "failed");
               finalStatus = "scheduled";
               throw new Error("Trigger condition not met");
             }
           } else {
             // Percentage-based - would need historical data, skip for now
-            log("TRIGGER", "ok", `Percentage condition check passed (${condCoin} ${condDir} ${condValue}%)`);
+            log(
+              "TRIGGER",
+              "ok",
+              `Percentage condition check passed (${condCoin} ${condDir} ${condValue}%)`,
+            );
           }
         } else if (workflow.rebalance_mode === "ratio") {
-          log("TRIGGER", "ok", `Ratio-based trigger: checking for >${workflow.threshold}% drift`);
+          log(
+            "TRIGGER",
+            "ok",
+            `Ratio-based trigger: checking for >${workflow.threshold}% drift`,
+          );
         } else if (workflow.rebalance_mode === "time") {
-          log("TRIGGER", "ok", `Time-based trigger: interval = ${workflow.time_interval}`);
+          log(
+            "TRIGGER",
+            "ok",
+            `Time-based trigger: interval = ${workflow.time_interval}`,
+          );
         }
 
-        log("TRIGGER", "ok", "Trigger conditions verified, proceeding to analysis");
+        log(
+          "TRIGGER",
+          "ok",
+          "Trigger conditions verified, proceeding to analysis",
+        );
         nodeStatus("trigger", "success");
         await delay(600);
 
@@ -714,27 +1065,49 @@ export async function POST(req: NextRequest) {
         if (workflow.venue === "TrueMarkets") {
           // ── TrueMarkets: fetch balances via CLI ──
           try {
-            log("PRE-TRADE", "info", "Fetching balances via TrueMarkets CLI...");
+            log(
+              "PRE-TRADE",
+              "info",
+              "Fetching balances via TrueMarkets CLI...",
+            );
             const rawBalances = await fetchTmBalances();
             const balances = await enrichTmBalancesWithPrices(rawBalances);
 
             const usdcBal = balances.find((b) => b.symbol === "USDC");
             const cashAvailable = usdcBal ? usdcBal.balance : 0;
-            log("PRE-TRADE", "ok", `TrueMarkets wallet: ${balances.length} token(s), USDC: $${cashAvailable.toFixed(2)}`);
+            log(
+              "PRE-TRADE",
+              "ok",
+              `TrueMarkets wallet: ${balances.length} token(s), USDC: $${cashAvailable.toFixed(2)}`,
+            );
 
             for (const bal of balances) {
               const base = bal.symbol.toUpperCase();
-              if (allSymbols.some((s) => normalizeSymbol(s) === base) && bal.value_usd > 0) {
+              if (
+                allSymbols.some((s) => normalizeSymbol(s) === base) &&
+                bal.value_usd > 0
+              ) {
                 currentHoldings[base] = bal.value_usd;
               }
             }
 
-            const posValue = Object.values(currentHoldings).reduce((s, v) => s + v, 0);
+            const posValue = Object.values(currentHoldings).reduce(
+              (s, v) => s + v,
+              0,
+            );
             totalPortfolioValue = workflow.investment;
 
-            log("PRE-TRADE", "info", `Current positions: $${posValue.toFixed(2)} | Target portfolio: $${totalPortfolioValue.toFixed(2)} | USDC available: $${cashAvailable.toFixed(2)}`);
+            log(
+              "PRE-TRADE",
+              "info",
+              `Current positions: $${posValue.toFixed(2)} | Target portfolio: $${totalPortfolioValue.toFixed(2)} | USDC available: $${cashAvailable.toFixed(2)}`,
+            );
           } catch (e) {
-            log("PRE-TRADE", "warn", `Could not fetch TrueMarkets balances: ${e instanceof Error ? e.message : "error"}. Using investment amount.`);
+            log(
+              "PRE-TRADE",
+              "warn",
+              `Could not fetch TrueMarkets balances: ${e instanceof Error ? e.message : "error"}. Using investment amount.`,
+            );
           }
         } else if (workflow.venue === "Alpaca" && hasAlpacaCredentials()) {
           // ── Alpaca: fetch positions and account ──
@@ -743,7 +1116,11 @@ export async function POST(req: NextRequest) {
               fetchAlpacaPositions(),
               fetchAlpacaAccount(),
             ]);
-            log("PRE-TRADE", "ok", `Alpaca account: equity=$${account.equity.toFixed(2)}, cash=$${account.cash.toFixed(2)}`);
+            log(
+              "PRE-TRADE",
+              "ok",
+              `Alpaca account: equity=$${account.equity.toFixed(2)}, cash=$${account.cash.toFixed(2)}`,
+            );
 
             for (const pos of positions) {
               const base = normalizeSymbol(pos.symbol);
@@ -752,28 +1129,56 @@ export async function POST(req: NextRequest) {
               }
             }
 
-            const posValue = Object.values(currentHoldings).reduce((s, v) => s + v, 0);
+            const posValue = Object.values(currentHoldings).reduce(
+              (s, v) => s + v,
+              0,
+            );
             totalPortfolioValue = workflow.investment;
 
-            log("PRE-TRADE", "info", `Current positions: $${posValue.toFixed(2)} | Target portfolio: $${totalPortfolioValue.toFixed(2)} | Cash available: $${account.cash.toFixed(2)}`);
+            log(
+              "PRE-TRADE",
+              "info",
+              `Current positions: $${posValue.toFixed(2)} | Target portfolio: $${totalPortfolioValue.toFixed(2)} | Cash available: $${account.cash.toFixed(2)}`,
+            );
           } catch (e) {
-            log("PRE-TRADE", "warn", `Could not fetch Alpaca positions: ${e instanceof Error ? e.message : "error"}. Using investment amount.`);
+            log(
+              "PRE-TRADE",
+              "warn",
+              `Could not fetch Alpaca positions: ${e instanceof Error ? e.message : "error"}. Using investment amount.`,
+            );
           }
         } else {
-          log("PRE-TRADE", "info", `Using initial investment: $${workflow.investment}`);
+          log(
+            "PRE-TRADE",
+            "info",
+            `Using initial investment: $${workflow.investment}`,
+          );
         }
 
         // Guard: if investment is 0 or not set, fall back to current positions value
         if (totalPortfolioValue <= 0) {
-          const posValue = Object.values(currentHoldings).reduce((s, v) => s + v, 0);
+          const posValue = Object.values(currentHoldings).reduce(
+            (s, v) => s + v,
+            0,
+          );
           if (posValue > 0) {
             totalPortfolioValue = posValue;
-            log("PRE-TRADE", "warn", `Investment amount is $0 — using current positions value ($${posValue.toFixed(2)}) as target`);
+            log(
+              "PRE-TRADE",
+              "warn",
+              `Investment amount is $0 — using current positions value ($${posValue.toFixed(2)}) as target`,
+            );
           } else {
-            log("PRE-TRADE", "error", "Investment amount is $0 and no positions found — cannot rebalance");
+            log(
+              "PRE-TRADE",
+              "error",
+              "Investment amount is $0 and no positions found — cannot rebalance",
+            );
             nodeStatus("analyze", "failed");
             finalStatus = "scheduled";
-            throw new Error("No investment amount set and no positions to rebalance");
+            throw new Error(
+              "No investment amount set and no positions to rebalance",
+            );
           }
         }
 
@@ -781,7 +1186,10 @@ export async function POST(req: NextRequest) {
         drifts = workflow.allocations.map((alloc) => {
           const base = normalizeSymbol(alloc.symbol);
           const currentValue = currentHoldings[base] || 0;
-          const currentPct = totalPortfolioValue > 0 ? (currentValue / totalPortfolioValue) * 100 : 0;
+          const currentPct =
+            totalPortfolioValue > 0
+              ? (currentValue / totalPortfolioValue) * 100
+              : 0;
           const targetValue = (alloc.pct / 100) * totalPortfolioValue;
           const driftPct = currentPct - alloc.pct;
           return {
@@ -797,12 +1205,25 @@ export async function POST(req: NextRequest) {
 
         for (const d of drifts) {
           const status = Math.abs(d.driftPct) > 2 ? "warn" : "ok";
-          const direction = d.driftPct > 0 ? "overweight" : d.driftPct < 0 ? "underweight" : "on-target";
-          log("PRE-TRADE", status, `${d.symbol}: target=${d.targetPct}%, current=${d.currentPct}%, drift=${d.driftPct > 0 ? "+" : ""}${d.driftPct}% (${direction})`);
+          const direction =
+            d.driftPct > 0
+              ? "overweight"
+              : d.driftPct < 0
+                ? "underweight"
+                : "on-target";
+          log(
+            "PRE-TRADE",
+            status,
+            `${d.symbol}: target=${d.targetPct}%, current=${d.currentPct}%, drift=${d.driftPct > 0 ? "+" : ""}${d.driftPct}% (${direction})`,
+          );
         }
 
         const maxDrift = Math.max(...drifts.map((d) => Math.abs(d.driftPct)));
-        log("PRE-TRADE", "ok", `Max drift: ${maxDrift.toFixed(2)}% | ${drifts.length} assets analyzed`);
+        log(
+          "PRE-TRADE",
+          "ok",
+          `Max drift: ${maxDrift.toFixed(2)}% | ${drifts.length} assets analyzed`,
+        );
 
         // Emit structured pre-trade analysis
         preTradeSnapshot = {
@@ -840,7 +1261,11 @@ export async function POST(req: NextRequest) {
           const elapsed = Date.now() - t0;
           log("VALIDATOR", "ok", `Price refresh completed in ${elapsed}ms`);
         } catch {
-          log("VALIDATOR", "warn", "Price re-fetch failed, using cached prices");
+          log(
+            "VALIDATOR",
+            "warn",
+            "Price re-fetch failed, using cached prices",
+          );
           prices2 = prices;
         }
 
@@ -848,29 +1273,50 @@ export async function POST(req: NextRequest) {
         let maxSlippage = 0;
         for (const sym of Object.keys(prices)) {
           if (prices2[sym] && prices[sym]) {
-            const slippage = Math.abs((prices2[sym] - prices[sym]) / prices[sym]) * 100;
+            const slippage =
+              Math.abs((prices2[sym] - prices[sym]) / prices[sym]) * 100;
             maxSlippage = Math.max(maxSlippage, slippage);
             if (slippage > 0.01) {
-              log("VALIDATOR", "info", `${sym} price moved ${slippage.toFixed(3)}% since trigger`);
+              log(
+                "VALIDATOR",
+                "info",
+                `${sym} price moved ${slippage.toFixed(3)}% since trigger`,
+              );
             }
           }
         }
 
         if (maxSlippage > 2) {
-          log("VALIDATOR", "error", `Max slippage ${maxSlippage.toFixed(2)}% exceeds 2% limit - aborting`);
+          log(
+            "VALIDATOR",
+            "error",
+            `Max slippage ${maxSlippage.toFixed(2)}% exceeds 2% limit - aborting`,
+          );
           nodeStatus("validate", "failed");
           finalStatus = "scheduled";
           throw new Error("Slippage too high");
         }
 
-        log("VALIDATOR", "ok", `Slippage check passed: max ${maxSlippage.toFixed(3)}% (limit: 2%)`);
+        log(
+          "VALIDATOR",
+          "ok",
+          `Slippage check passed: max ${maxSlippage.toFixed(3)}% (limit: 2%)`,
+        );
 
         // Check cash sufficiency for buys
-        const totalBuyNeeded = drifts.filter((d) => d.diffUsd > 0).reduce((s, d) => s + d.diffUsd, 0);
-        const totalSellProceeds = drifts.filter((d) => d.diffUsd < 0).reduce((s, d) => s + Math.abs(d.diffUsd), 0);
+        const totalBuyNeeded = drifts
+          .filter((d) => d.diffUsd > 0)
+          .reduce((s, d) => s + d.diffUsd, 0);
+        const totalSellProceeds = drifts
+          .filter((d) => d.diffUsd < 0)
+          .reduce((s, d) => s + Math.abs(d.diffUsd), 0);
         const netCashNeeded = totalBuyNeeded - totalSellProceeds;
         if (netCashNeeded > 0) {
-          log("VALIDATOR", "info", `Net cash needed: $${netCashNeeded.toFixed(2)} (buys: $${totalBuyNeeded.toFixed(2)}, sells provide: $${totalSellProceeds.toFixed(2)})`);
+          log(
+            "VALIDATOR",
+            "info",
+            `Net cash needed: $${netCashNeeded.toFixed(2)} (buys: $${totalBuyNeeded.toFixed(2)}, sells provide: $${totalSellProceeds.toFixed(2)})`,
+          );
         }
 
         log("VALIDATOR", "ok", `Drift confirmed valid, proceeding to planning`);
@@ -881,21 +1327,41 @@ export async function POST(req: NextRequest) {
         nodeStatus("plan", "running");
 
         if (workflow.engine_type === "truesignal") {
-          log("PLANNER", "info", `Generating AI trade plan via ${workflow.ai_model || "Claude Sonnet 4.5"}...`);
+          log(
+            "PLANNER",
+            "info",
+            `Generating AI trade plan via ${workflow.ai_model || "Claude Sonnet 4.5"}...`,
+          );
           trades = await generateAITradePlan(workflow, drifts, prices2);
-          log("PLANNER", "ok", `AI planner generated ${trades.length} trade(s)`);
+          log(
+            "PLANNER",
+            "ok",
+            `AI planner generated ${trades.length} trade(s)`,
+          );
         } else {
           log("PLANNER", "info", "Running deterministic trade planner...");
           trades = generateDeterministicPlan(drifts, prices2);
-          log("PLANNER", "ok", `Deterministic planner generated ${trades.length} trade(s)`);
+          log(
+            "PLANNER",
+            "ok",
+            `Deterministic planner generated ${trades.length} trade(s)`,
+          );
         }
 
         for (const t of trades) {
-          log("PLANNER", "ok", `${t.side.toUpperCase()} ${t.symbol}: $${t.notional.toFixed(2)}`);
+          log(
+            "PLANNER",
+            "ok",
+            `${t.side.toUpperCase()} ${t.symbol}: $${t.notional.toFixed(2)}`,
+          );
         }
 
         if (trades.length === 0) {
-          log("PLANNER", "info", "No trades needed - portfolio is within tolerance");
+          log(
+            "PLANNER",
+            "info",
+            "No trades needed - portfolio is within tolerance",
+          );
         }
 
         nodeStatus("plan", "success");
@@ -909,17 +1375,34 @@ export async function POST(req: NextRequest) {
           nodeStatus("execute", "success");
         } else if (workflow.venue === "TrueMarkets") {
           // ── TrueMarkets CLI execution ──
-          log("EXECUTOR", "info", `Submitting ${trades.length} order(s) via TrueMarkets CLI (${workflow.mode} mode)...`);
+          log(
+            "EXECUTOR",
+            "info",
+            `Submitting ${trades.length} order(s) via TrueMarkets CLI (${workflow.mode} mode)...`,
+          );
 
           for (const trade of trades) {
             if (trade.notional < 1) {
-              log("EXECUTOR", "info", `Skipping ${trade.symbol}: notional $${trade.notional.toFixed(2)} below $1 minimum`);
+              log(
+                "EXECUTOR",
+                "info",
+                `Skipping ${trade.symbol}: notional $${trade.notional.toFixed(2)} below $1 minimum`,
+              );
               continue;
             }
 
             try {
-              log("EXECUTOR", "info", `Placing ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)} via tm CLI...`);
-              const result = await placeTmOrder(trade.symbol, trade.side, trade.notional, prices2[trade.symbol] || prices[trade.symbol]);
+              log(
+                "EXECUTOR",
+                "info",
+                `Placing ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)} via tm CLI...`,
+              );
+              const result = await placeTmOrder(
+                trade.symbol,
+                trade.side,
+                trade.notional,
+                prices2[trade.symbol] || prices[trade.symbol],
+              );
               executedOrders.push({
                 symbol: trade.symbol,
                 side: trade.side,
@@ -928,12 +1411,24 @@ export async function POST(req: NextRequest) {
                 status: "filled",
               });
               if (result.dryRun) {
-                log("EXECUTOR", "info", `Dry-run: ${trade.side} ${result.dryRun.qty} USDC -> ${result.dryRun.qtyOut} ${trade.symbol} (fee: ${result.dryRun.fee})`);
+                log(
+                  "EXECUTOR",
+                  "info",
+                  `Dry-run: ${trade.side} ${result.dryRun.qty} USDC -> ${result.dryRun.qtyOut} ${trade.symbol} (fee: ${result.dryRun.fee})`,
+                );
               }
-              log("EXECUTOR", "ok", `Order ${result.orderId.slice(0, 8)}... filled | tx: ${result.txHash.slice(0, 12)}...`);
+              log(
+                "EXECUTOR",
+                "ok",
+                `Order ${result.orderId.slice(0, 8)}... filled | tx: ${result.txHash.slice(0, 12)}...`,
+              );
             } catch (e) {
               const msg = e instanceof Error ? e.message : "Unknown error";
-              log("EXECUTOR", "error", `Failed to execute ${trade.side} ${trade.symbol}: ${msg}`);
+              log(
+                "EXECUTOR",
+                "error",
+                `Failed to execute ${trade.side} ${trade.symbol}: ${msg}`,
+              );
               executedOrders.push({
                 symbol: trade.symbol,
                 side: trade.side,
@@ -945,9 +1440,17 @@ export async function POST(req: NextRequest) {
             await delay(500);
           }
 
-          const successCount = executedOrders.filter((o) => o.status !== "failed").length;
-          const failCount = executedOrders.filter((o) => o.status === "failed").length;
-          log("EXECUTOR", successCount > 0 ? "ok" : "error", `Execution complete: ${successCount} filled, ${failCount} failed`);
+          const successCount = executedOrders.filter(
+            (o) => o.status !== "failed",
+          ).length;
+          const failCount = executedOrders.filter(
+            (o) => o.status === "failed",
+          ).length;
+          log(
+            "EXECUTOR",
+            successCount > 0 ? "ok" : "error",
+            `Execution complete: ${successCount} filled, ${failCount} failed`,
+          );
 
           if (failCount > 0 && successCount === 0) {
             nodeStatus("execute", "failed");
@@ -956,17 +1459,33 @@ export async function POST(req: NextRequest) {
           nodeStatus("execute", "success");
         } else if (workflow.venue === "Alpaca" && hasAlpacaCredentials()) {
           // ── Alpaca execution ──
-          log("EXECUTOR", "info", `Submitting ${trades.length} order(s) to Alpaca (${workflow.mode} mode)...`);
+          log(
+            "EXECUTOR",
+            "info",
+            `Submitting ${trades.length} order(s) to Alpaca (${workflow.mode} mode)...`,
+          );
 
           for (const trade of trades) {
             if (trade.notional < 1) {
-              log("EXECUTOR", "info", `Skipping ${trade.symbol}: notional $${trade.notional.toFixed(2)} below $1 minimum`);
+              log(
+                "EXECUTOR",
+                "info",
+                `Skipping ${trade.symbol}: notional $${trade.notional.toFixed(2)} below $1 minimum`,
+              );
               continue;
             }
 
             try {
-              log("EXECUTOR", "info", `Placing ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)}...`);
-              const order = await placeAlpacaOrder(trade.symbol, trade.side, trade.notional);
+              log(
+                "EXECUTOR",
+                "info",
+                `Placing ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)}...`,
+              );
+              const order = await placeAlpacaOrder(
+                trade.symbol,
+                trade.side,
+                trade.notional,
+              );
               executedOrders.push({
                 symbol: trade.symbol,
                 side: trade.side,
@@ -974,10 +1493,18 @@ export async function POST(req: NextRequest) {
                 orderId: order.id,
                 status: order.status,
               });
-              log("EXECUTOR", "ok", `Order ${order.id.slice(0, 8)}... ${order.status}: ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)}`);
+              log(
+                "EXECUTOR",
+                "ok",
+                `Order ${order.id.slice(0, 8)}... ${order.status}: ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)}`,
+              );
             } catch (e) {
               const msg = e instanceof Error ? e.message : "Unknown error";
-              log("EXECUTOR", "error", `Failed to execute ${trade.side} ${trade.symbol}: ${msg}`);
+              log(
+                "EXECUTOR",
+                "error",
+                `Failed to execute ${trade.side} ${trade.symbol}: ${msg}`,
+              );
               executedOrders.push({
                 symbol: trade.symbol,
                 side: trade.side,
@@ -989,9 +1516,17 @@ export async function POST(req: NextRequest) {
             await delay(300);
           }
 
-          const successCount = executedOrders.filter((o) => o.status !== "failed").length;
-          const failCount = executedOrders.filter((o) => o.status === "failed").length;
-          log("EXECUTOR", successCount > 0 ? "ok" : "error", `Execution complete: ${successCount} filled, ${failCount} failed`);
+          const successCount = executedOrders.filter(
+            (o) => o.status !== "failed",
+          ).length;
+          const failCount = executedOrders.filter(
+            (o) => o.status === "failed",
+          ).length;
+          log(
+            "EXECUTOR",
+            successCount > 0 ? "ok" : "error",
+            `Execution complete: ${successCount} filled, ${failCount} failed`,
+          );
 
           if (failCount > 0 && successCount === 0) {
             nodeStatus("execute", "failed");
@@ -1005,7 +1540,11 @@ export async function POST(req: NextRequest) {
             if (trade.notional < 1) continue;
             const price = prices2[trade.symbol] || 0;
             const qty = price > 0 ? trade.notional / price : 0;
-            log("EXECUTOR", "ok", `Simulated: ${trade.side.toUpperCase()} ${qty.toFixed(6)} ${trade.symbol} @ $${price.toLocaleString()} ($${trade.notional.toFixed(2)})`);
+            log(
+              "EXECUTOR",
+              "ok",
+              `Simulated: ${trade.side.toUpperCase()} ${qty.toFixed(6)} ${trade.symbol} @ $${price.toLocaleString()} ($${trade.notional.toFixed(2)})`,
+            );
             executedOrders.push({
               symbol: trade.symbol,
               side: trade.side,
@@ -1015,7 +1554,11 @@ export async function POST(req: NextRequest) {
             });
             await delay(300);
           }
-          log("EXECUTOR", "ok", `${executedOrders.length} paper trade(s) simulated`);
+          log(
+            "EXECUTOR",
+            "ok",
+            `${executedOrders.length} paper trade(s) simulated`,
+          );
           nodeStatus("execute", "success");
         }
         await delay(400);
@@ -1029,43 +1572,86 @@ export async function POST(req: NextRequest) {
           await delay(2000); // Wait for on-chain settlement
           try {
             const newRawBalances = await fetchTmBalances();
-            const newBalances = await enrichTmBalancesWithPrices(newRawBalances);
-            log("VERIFIER", "ok", `Fetched ${newBalances.length} token(s) from TrueMarkets`);
+            const newBalances =
+              await enrichTmBalancesWithPrices(newRawBalances);
+            log(
+              "VERIFIER",
+              "ok",
+              `Fetched ${newBalances.length} token(s) from TrueMarkets`,
+            );
 
             for (const order of executedOrders) {
               if (order.status === "failed") continue;
               const bal = newBalances.find((b) => b.symbol === order.symbol);
               if (bal) {
-                log("VERIFIER", "ok", `${order.symbol}: balance=${bal.balance}, value=$${bal.value_usd.toFixed(2)}`);
+                log(
+                  "VERIFIER",
+                  "ok",
+                  `${order.symbol}: balance=${bal.balance}, value=$${bal.value_usd.toFixed(2)}`,
+                );
               } else {
-                log("VERIFIER", "warn", `${order.symbol}: not found in wallet (may still be settling on-chain)`);
+                log(
+                  "VERIFIER",
+                  "warn",
+                  `${order.symbol}: not found in wallet (may still be settling on-chain)`,
+                );
               }
             }
           } catch {
-            log("VERIFIER", "warn", "Could not re-fetch TrueMarkets balances for verification");
+            log(
+              "VERIFIER",
+              "warn",
+              "Could not re-fetch TrueMarkets balances for verification",
+            );
           }
-        } else if (workflow.venue === "Alpaca" && hasAlpacaCredentials() && executedOrders.length > 0) {
+        } else if (
+          workflow.venue === "Alpaca" &&
+          hasAlpacaCredentials() &&
+          executedOrders.length > 0
+        ) {
           // ── Alpaca: re-fetch positions ──
           await delay(1500);
           try {
             const newPositions = await fetchAlpacaPositions();
-            log("VERIFIER", "ok", `Fetched ${newPositions.length} position(s) from Alpaca`);
+            log(
+              "VERIFIER",
+              "ok",
+              `Fetched ${newPositions.length} position(s) from Alpaca`,
+            );
 
             for (const order of executedOrders) {
               if (order.status === "failed") continue;
-              const pos = newPositions.find((p) => normalizeSymbol(p.symbol) === order.symbol);
+              const pos = newPositions.find(
+                (p) => normalizeSymbol(p.symbol) === order.symbol,
+              );
               if (pos) {
-                log("VERIFIER", "ok", `${order.symbol}: qty=${pos.qty}, value=$${pos.market_value.toFixed(2)}`);
+                log(
+                  "VERIFIER",
+                  "ok",
+                  `${order.symbol}: qty=${pos.qty}, value=$${pos.market_value.toFixed(2)}`,
+                );
               } else {
-                log("VERIFIER", "warn", `${order.symbol}: position not yet visible (order may be pending)`);
+                log(
+                  "VERIFIER",
+                  "warn",
+                  `${order.symbol}: position not yet visible (order may be pending)`,
+                );
               }
             }
           } catch {
-            log("VERIFIER", "warn", "Could not re-fetch positions for verification");
+            log(
+              "VERIFIER",
+              "warn",
+              "Could not re-fetch positions for verification",
+            );
           }
         } else {
           for (const order of executedOrders) {
-            log("VERIFIER", "ok", `${order.symbol}: ${order.side} $${order.notional.toFixed(2)} verified (${order.status})`);
+            log(
+              "VERIFIER",
+              "ok",
+              `${order.symbol}: ${order.side} $${order.notional.toFixed(2)} verified (${order.status})`,
+            );
           }
         }
 
@@ -1078,29 +1664,57 @@ export async function POST(req: NextRequest) {
         log("POST-TRADE", "info", "Analyzing rebalance quality...");
 
         const totalTraded = executedOrders.reduce((s, o) => s + o.notional, 0);
-        const successfulTrades = executedOrders.filter((o) => o.status !== "failed");
+        const successfulTrades = executedOrders.filter(
+          (o) => o.status !== "failed",
+        );
 
         // Estimate new drift
         const estimatedNewDrifts = drifts.map((d) => {
           const trade = trades.find((t) => t.symbol === d.symbol);
           if (!trade) return d;
-          const adjustedValue = d.currentValue + (trade.side === "buy" ? trade.notional : -trade.notional);
-          const newPct = totalPortfolioValue > 0 ? (adjustedValue / totalPortfolioValue) * 100 : 0;
+          const adjustedValue =
+            d.currentValue +
+            (trade.side === "buy" ? trade.notional : -trade.notional);
+          const newPct =
+            totalPortfolioValue > 0
+              ? (adjustedValue / totalPortfolioValue) * 100
+              : 0;
           return { ...d, currentPct: newPct, driftPct: newPct - d.targetPct };
         });
 
         const oldMaxDrift = maxDrift;
-        const newMaxDrift = Math.max(...estimatedNewDrifts.map((d) => Math.abs(d.driftPct)));
+        const newMaxDrift = Math.max(
+          ...estimatedNewDrifts.map((d) => Math.abs(d.driftPct)),
+        );
 
-        log("POST-TRADE", "ok", `Drift reduced: ${oldMaxDrift.toFixed(2)}% -> ${newMaxDrift.toFixed(2)}% | Improvement: ${(oldMaxDrift - newMaxDrift).toFixed(2)}pts`);
-        log("POST-TRADE", "ok", `Total traded: $${totalTraded.toFixed(2)} across ${successfulTrades.length} order(s)`);
+        log(
+          "POST-TRADE",
+          "ok",
+          `Drift reduced: ${oldMaxDrift.toFixed(2)}% -> ${newMaxDrift.toFixed(2)}% | Improvement: ${(oldMaxDrift - newMaxDrift).toFixed(2)}pts`,
+        );
+        log(
+          "POST-TRADE",
+          "ok",
+          `Total traded: $${totalTraded.toFixed(2)} across ${successfulTrades.length} order(s)`,
+        );
 
         // Estimate fees (Alpaca paper is free, but log for realism)
         const estimatedFees = totalTraded * 0.001; // 0.1% estimate
-        log("POST-TRADE", "ok", `Estimated fees: $${estimatedFees.toFixed(2)} (0.1%)`);
+        log(
+          "POST-TRADE",
+          "ok",
+          `Estimated fees: $${estimatedFees.toFixed(2)} (0.1%)`,
+        );
 
-        const benefitScore = oldMaxDrift > 0 ? ((oldMaxDrift - newMaxDrift) / oldMaxDrift * 100) : 0;
-        log("POST-TRADE", "ok", `Benefit score: ${benefitScore.toFixed(1)}% drift reduction`);
+        const benefitScore =
+          oldMaxDrift > 0
+            ? ((oldMaxDrift - newMaxDrift) / oldMaxDrift) * 100
+            : 0;
+        log(
+          "POST-TRADE",
+          "ok",
+          `Benefit score: ${benefitScore.toFixed(1)}% drift reduction`,
+        );
 
         // Emit structured post-trade analysis
         postTradeSnapshot = {
@@ -1143,8 +1757,27 @@ export async function POST(req: NextRequest) {
           .eq("id", workflowId);
 
         log("REPORTER", "ok", "Workflow status updated to: completed");
-        log("REPORTER", "ok", `Summary: ${successfulTrades.length} trades, $${totalTraded.toFixed(2)} volume, ${benefitScore.toFixed(0)}% drift improvement`);
-        log("REPORTER", "ok", `Workflow "${workflow.name}" complete. All nodes passed.`);
+        log(
+          "REPORTER",
+          "ok",
+          `Summary: ${successfulTrades.length} trades, $${totalTraded.toFixed(2)} volume, ${benefitScore.toFixed(0)}% drift improvement`,
+        );
+        // Send email report
+        log("REPORTER", "info", "Sending execution report email...");
+        await sendExecutionReport(
+          workflow,
+          preTradeSnapshot,
+          postTradeSnapshot,
+          runId,
+          "completed",
+        );
+        log("REPORTER", "ok", "Email report sent to ss21034@nyu.edu");
+
+        log(
+          "REPORTER",
+          "ok",
+          `Workflow "${workflow.name}" complete. All nodes passed.`,
+        );
         nodeStatus("report", "success");
 
         await persistLogs();
@@ -1160,7 +1793,11 @@ export async function POST(req: NextRequest) {
           })
           .eq("run_id", runId);
 
-        send("complete", { status: "completed", runId, trades: executedOrders.length });
+        send("complete", {
+          status: "completed",
+          runId,
+          trades: executedOrders.length,
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
 
@@ -1182,6 +1819,16 @@ export async function POST(req: NextRequest) {
             completed_at: new Date().toISOString(),
           })
           .eq("run_id", runId);
+
+        // Send failure email report
+        await sendExecutionReport(
+          workflow,
+          preTradeSnapshot,
+          postTradeSnapshot,
+          runId,
+          "failed",
+          msg,
+        );
 
         send("complete", { status: finalStatus, runId, error: msg });
       }

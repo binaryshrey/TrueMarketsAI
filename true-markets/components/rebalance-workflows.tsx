@@ -518,6 +518,7 @@ export default function RebalanceWorkflows() {
   const [postTradeData, setPostTradeData] = useState<PostTradeData | null>(null);
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [infoTab, setInfoTab] = useState<"pre" | "post">("pre");
+  const [showApiModal, setShowApiModal] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -1150,6 +1151,15 @@ export default function RebalanceWorkflows() {
                 <Info className="h-3 w-3" />
                 Info
               </button>
+              {selected?.venue === "TrueMarkets" && (
+                <button
+                  onClick={() => setShowApiModal(true)}
+                  className="flex items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-400 transition-colors hover:bg-cyan-500/20"
+                >
+                  <Terminal className="h-3 w-3" />
+                  APIs
+                </button>
+              )}
               <button
                 onClick={handleDeleteWorkflow}
                 disabled={isExecuting}
@@ -2181,6 +2191,184 @@ export default function RebalanceWorkflows() {
           </div>
         </div>
       )}
+
+      {/* ── TrueMarkets APIs Modal ── */}
+      {showApiModal && selected?.venue === "TrueMarkets" && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowApiModal(false)}
+        >
+          <div
+            className="relative w-full max-w-[600px] max-h-[85vh] overflow-hidden rounded-2xl border border-white/[0.08] shadow-2xl"
+            style={{
+              background: "linear-gradient(180deg, rgba(18,18,22,0.97) 0%, rgba(10,10,14,0.98) 100%)",
+              backdropFilter: "blur(40px) saturate(1.5)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div
+              className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3.5"
+              style={{ background: "rgba(255,255,255,0.02)" }}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-500/15">
+                  <Terminal className="h-3.5 w-3.5 text-cyan-400" />
+                </div>
+                <h3 className="text-sm font-semibold text-zinc-100">
+                  TrueMarkets APIs Used
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowApiModal(false)}
+                className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-zinc-300"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="overflow-y-auto px-5 py-4 space-y-3" style={{ maxHeight: "calc(85vh - 60px)" }}>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                The following TrueMarkets CLI commands and APIs are invoked during workflow execution. Each pipeline node uses specific commands to fetch data or execute trades.
+              </p>
+
+              <ApiNodeCard
+                node="TRIGGER"
+                color="#f1c232"
+                title="Price Feed"
+                commands={[
+                  { cmd: `tm price ${(selected?.allocations ?? []).map((a: WorkflowAllocation) => a.symbol.replace(/USD$/i, "")).join(" ")} -o json`, desc: "Fetches real-time prices for all portfolio assets" },
+                ]}
+                endpoint="TrueMarkets Price API via CLI"
+              />
+
+              <ApiNodeCard
+                node="PRE-TRADE"
+                color="#8b5cf6"
+                title="Balance Fetch"
+                commands={[
+                  { cmd: "tm balances -o json", desc: "Fetches all wallet token balances" },
+                  { cmd: `tm price ${(selected?.allocations ?? []).map((a: WorkflowAllocation) => a.symbol.replace(/USD$/i, "")).join(" ")} -o json`, desc: "Enriches balances with USD prices" },
+                ]}
+                endpoint="TrueMarkets Balances + Price API"
+              />
+
+              <ApiNodeCard
+                node="VALIDATOR"
+                color="#a855f7"
+                title="Price Re-verification"
+                commands={[
+                  { cmd: `tm price ${(selected?.allocations ?? []).map((a: WorkflowAllocation) => a.symbol.replace(/USD$/i, "")).join(" ")} -o json`, desc: "Re-fetches prices to check slippage since trigger" },
+                ]}
+                endpoint="TrueMarkets Price API via CLI"
+              />
+
+              <ApiNodeCard
+                node="PLANNER"
+                color="#3b82f6"
+                title="AI Trade Planning"
+                commands={[
+                  { cmd: "POST https://openrouter.ai/api/v1/chat/completions", desc: `Generates optimal trade plan via ${selected?.ai_model || "Claude Sonnet 4.5"}` },
+                ]}
+                endpoint="OpenRouter API (Claude)"
+              />
+
+              <ApiNodeCard
+                node="EXECUTOR"
+                color="#10b981"
+                title="Trade Execution"
+                commands={[
+                  { cmd: "tm buy <token> <amount> --qty-unit quote --dry-run --force -o json", desc: "Dry-run quote for buy orders (validates before execution)" },
+                  { cmd: "tm buy <token> <amount> --qty-unit quote --force -o json", desc: "Executes buy order on-chain" },
+                  { cmd: "tm sell <token> <amount> --qty-unit base --dry-run --force -o json", desc: "Dry-run quote for sell orders" },
+                  { cmd: "tm sell <token> <amount> --qty-unit base --force -o json", desc: "Executes sell order on-chain" },
+                ]}
+                endpoint="TrueMarkets Trade API via CLI"
+              />
+
+              <ApiNodeCard
+                node="VERIFIER"
+                color="#06b6d4"
+                title="Balance Reconciliation"
+                commands={[
+                  { cmd: "tm balances -o json", desc: "Re-fetches wallet balances after on-chain settlement (2s delay)" },
+                  { cmd: `tm price ${(selected?.allocations ?? []).map((a: WorkflowAllocation) => a.symbol.replace(/USD$/i, "")).join(" ")} -o json`, desc: "Enriches post-trade balances with current prices" },
+                ]}
+                endpoint="TrueMarkets Balances + Price API"
+              />
+
+              <ApiNodeCard
+                node="REPORTER"
+                color="#f43f5e"
+                title="Persistence"
+                commands={[
+                  { cmd: "Supabase: UPDATE rebalance_workflows SET status = 'completed'", desc: "Updates workflow status" },
+                  { cmd: "Supabase: INSERT INTO workflow_execution_logs", desc: "Persists all execution logs" },
+                  { cmd: "Supabase: UPDATE workflow_execution_runs SET pre_trade, post_trade", desc: "Persists pre/post trade analysis" },
+                ]}
+                endpoint="Supabase PostgreSQL"
+              />
+
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">
+                  Authentication
+                </p>
+                <div className="space-y-1.5 text-[11px] text-zinc-400">
+                  <p>TrueMarkets CLI authenticates via API key set with <code className="rounded bg-white/[0.06] px-1 py-[1px] text-[10px] font-mono text-cyan-300">tm config set api_key &lt;key&gt;</code></p>
+                  <p>Trade payloads are signed locally using ES256. All orders execute on Solana chain by default.</p>
+                  <p>CLI reference: <code className="rounded bg-white/[0.06] px-1 py-[1px] text-[10px] font-mono text-cyan-300">github.com/true-markets/cli</code></p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── API Node Card sub-component ── */
+function ApiNodeCard({
+  node,
+  color,
+  title,
+  commands,
+  endpoint,
+}: {
+  node: string;
+  color: string;
+  title: string;
+  commands: Array<{ cmd: string; desc: string }>;
+  endpoint: string;
+}) {
+  return (
+    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+      <div
+        className="flex items-center justify-between px-3.5 py-2 border-b border-white/[0.04]"
+        style={{ background: `${color}08` }}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider"
+            style={{ backgroundColor: `${color}18`, color }}
+          >
+            {node}
+          </span>
+          <span className="text-[11px] font-medium text-zinc-300">{title}</span>
+        </div>
+        <span className="text-[10px] text-zinc-600">{endpoint}</span>
+      </div>
+      <div className="px-3.5 py-2.5 space-y-2">
+        {commands.map((c, i) => (
+          <div key={i}>
+            <code className="block rounded-md bg-black/30 px-2.5 py-1.5 text-[10px] font-mono leading-relaxed text-cyan-300 overflow-x-auto">
+              {c.cmd}
+            </code>
+            <p className="mt-1 text-[10px] text-zinc-500">{c.desc}</p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
