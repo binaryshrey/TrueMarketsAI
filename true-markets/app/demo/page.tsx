@@ -222,7 +222,7 @@ export default function DemoPage() {
         </div>
 
         {/* Pipeline flow + explanations side by side */}
-        <div className="flex flex-1 min-h-0">
+        <div className="flex flex-1 min-h-0 mt-16">
           {/* Pipeline flow */}
           <div className="flex-1 overflow-y-auto px-3 py-4">
             <div className="mx-auto max-w-[420px] space-y-0">
@@ -300,7 +300,7 @@ export default function DemoPage() {
           </div>
 
           {/* Agent explanations — right column */}
-          <div className="w-[300px] flex-shrink-0 overflow-y-auto border-l border-white/[0.06] px-3 py-4">
+          <div className="w-[400px] flex-shrink-0 overflow-y-auto border-l border-white/[0.06] px-3 py-4">
             <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.15em] text-zinc-400">
               Agent Reference
             </p>
