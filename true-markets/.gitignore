@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+truemarkets-api-key-*.json
 
 # debug
 npm-debug.log*

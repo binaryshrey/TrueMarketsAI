@@ -12,12 +12,17 @@ export async function GET(req: NextRequest) {
   });
 
   try {
+    const apiKey = process.env.COINGECKO_API_KEY;
     const url = `${COINGECKO_BASE}/${endpoint}?${cgParams.toString()}`;
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "User-Agent": "TrueMarkets/1.0",
+    };
+    if (apiKey) {
+      headers["x-cg-demo-api-key"] = apiKey;
+    }
     const response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "TrueMarkets/1.0",
-      },
+      headers,
       next: { revalidate: 60 },
     });
 
