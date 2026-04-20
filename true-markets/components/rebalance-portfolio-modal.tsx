@@ -463,6 +463,11 @@ export default function RebalancePortfolioModal({
             if (typeof data.strategy === "string") {
               setAiStrategy(data.strategy);
             }
+
+            // Auto-set investment to available balance
+            if (availableBalance > 0 && !investment) {
+              setInvestment(availableBalance.toFixed(2));
+            }
           }
         } catch {
           // Fallback to equal on error
@@ -860,11 +865,20 @@ export default function RebalancePortfolioModal({
                     <p className="text-sm font-semibold text-zinc-200">
                       Invest Coin
                     </p>
-                    <p className="mt-0.5 text-xs text-zinc-500">
+                    <p className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500">
                       Avbl:{" "}
                       <span className="text-zinc-400">
                         {availableBalance.toFixed(2)} USDT
                       </span>
+                      {availableBalance > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setInvestment(availableBalance.toFixed(2))}
+                          className="rounded bg-[#f1c232]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#f1c232] transition-colors hover:bg-[#f1c232]/25"
+                        >
+                          MAX
+                        </button>
+                      )}
                     </p>
                     <div className="mt-2 flex items-center justify-between rounded-lg border border-white/[0.07] bg-[#0d111b] px-3 py-2.5">
                       <span className="text-sm text-zinc-500">Investment</span>
@@ -1506,7 +1520,7 @@ export default function RebalancePortfolioModal({
                   {isLastStep
                     ? creating
                       ? "Creating…"
-                      : "Create Strategy"
+                      : "Create Workflow"
                     : "Next"}
                   {!isLastStep && <ArrowRight className="h-3.5 w-3.5" />}
                 </button>

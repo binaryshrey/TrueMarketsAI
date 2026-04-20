@@ -52,3 +52,23 @@ alter table workflow_execution_logs enable row level security;
 
 create policy "Allow all operations for anon" on workflow_execution_logs
   for all using (true) with check (true);
+
+
+-- Structured analysis data per execution run
+create table if not exists workflow_execution_runs (
+  id uuid primary key default gen_random_uuid(),
+  workflow_id uuid not null references rebalance_workflows(id) on delete cascade,
+  run_id uuid not null unique,
+  status text not null default 'running' check (status in ('running', 'completed', 'failed')),
+  pre_trade jsonb,                                -- PreTradeData snapshot
+  post_trade jsonb,                               -- PostTradeData snapshot
+  started_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
+create index idx_exec_runs_workflow on workflow_execution_runs(workflow_id, started_at desc);
+
+alter table workflow_execution_runs enable row level security;
+
+create policy "Allow all operations for anon" on workflow_execution_runs
+  for all using (true) with check (true);

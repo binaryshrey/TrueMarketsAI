@@ -1,9 +1,13 @@
 import { NextRequest } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getAlpacaServerConfig, hasAlpacaCredentials } from "@/lib/alpaca";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
+
+const execFile = promisify(execFileCb);
 
 const COINGECKO_BASE = "https://api.coingecko.com/api/v3";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -243,6 +247,180 @@ async function placeAlpacaOrder(
   };
 }
 
+/* ── TrueMarkets CLI helpers ── */
+
+async function tmCli(args: string[]): Promise<string> {
+  const { stdout } = await execFile("tm", args, {
+    timeout: 30_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+async function fetchTmPrices(symbols: string[]): Promise<PriceMap> {
+  const bases = symbols.map(normalizeSymbol);
+  const prices: PriceMap = {};
+
+  // tm price outputs pretty-printed JSON objects (multi-line each).
+  // For multiple symbols, objects are concatenated with no delimiter.
+  // We extract each {...} block and parse individually.
+  try {
+    const stdout = await tmCli(["price", ...bases, "-o", "json"]);
+    // Extract all top-level JSON objects from the output
+    const objects = extractJsonObjects(stdout);
+    for (const obj of objects) {
+      if (obj.symbol && obj.price) {
+        prices[String(obj.symbol).toUpperCase()] = Number(obj.price);
+      }
+    }
+  } catch {
+    // Fallback: fetch one at a time
+    await Promise.all(
+      bases.map(async (sym) => {
+        try {
+          const stdout = await tmCli(["price", sym, "-o", "json"]);
+          const data = JSON.parse(stdout);
+          if (data.price) prices[sym] = Number(data.price);
+        } catch {
+          // skip
+        }
+      }),
+    );
+  }
+
+  return prices;
+}
+
+/** Extract all top-level JSON objects from a string containing concatenated pretty-printed JSON */
+function extractJsonObjects(text: string): Array<Record<string, unknown>> {
+  const results: Array<Record<string, unknown>> = [];
+  let depth = 0;
+  let start = -1;
+
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (text[i] === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try {
+          const obj = JSON.parse(text.slice(start, i + 1));
+          results.push(obj);
+        } catch {
+          // skip malformed
+        }
+        start = -1;
+      }
+    }
+  }
+
+  return results;
+}
+
+interface TmBalance {
+  symbol: string;
+  balance: number;
+  chain: string;
+  tradeable: boolean;
+  stable: boolean;
+  price_usd: number;
+  value_usd: number;
+}
+
+async function fetchTmBalances(): Promise<TmBalance[]> {
+  const stdout = await tmCli(["balances", "-o", "json"]);
+  const data = JSON.parse(stdout);
+  if (!Array.isArray(data.balances)) return [];
+
+  const balances: TmBalance[] = [];
+  for (const b of data.balances) {
+    const balance = Number(b.balance) || 0;
+    balances.push({
+      symbol: String(b.symbol || "").toUpperCase(),
+      balance,
+      chain: String(b.chain || "solana"),
+      tradeable: Boolean(b.tradeable),
+      stable: Boolean(b.stable),
+      price_usd: 0,
+      value_usd: 0,
+    });
+  }
+
+  return balances;
+}
+
+async function enrichTmBalancesWithPrices(balances: TmBalance[]): Promise<TmBalance[]> {
+  const nonStable = balances.filter((b) => !b.stable && b.balance > 0);
+  const symbols = nonStable.map((b) => b.symbol);
+  const prices = symbols.length > 0 ? await fetchTmPrices(symbols) : {};
+
+  return balances.map((b) => {
+    const price = b.stable ? 1 : (prices[b.symbol] || 0);
+    return {
+      ...b,
+      price_usd: price,
+      value_usd: b.balance * price,
+    };
+  });
+}
+
+async function placeTmOrder(
+  symbol: string,
+  side: "buy" | "sell",
+  amountUsd: number,
+  currentPrice?: number,
+): Promise<{ orderId: string; txHash: string; dryRun?: { qty: string; qtyOut: string; fee: string } }> {
+  const base = normalizeSymbol(symbol);
+
+  // Buy: use --qty-unit quote (spend X USDC)
+  // Sell: use --qty-unit base (sell X tokens) — convert USD to token qty via price
+  let amount: string;
+  let qtyUnit: string;
+
+  if (side === "buy") {
+    amount = Math.abs(amountUsd).toFixed(2);
+    qtyUnit = "quote";
+  } else {
+    // For sells, convert USD amount to token quantity
+    const price = currentPrice || 0;
+    if (price <= 0) {
+      throw new Error(`Cannot sell ${base}: no price available to compute token quantity`);
+    }
+    const tokenQty = Math.abs(amountUsd) / price;
+    amount = tokenQty.toPrecision(8);
+    qtyUnit = "base";
+  }
+
+  // Dry run first
+  const dryStdout = await tmCli([side, base, amount, "--qty-unit", qtyUnit, "--dry-run", "-o", "json", "--force"]);
+  const dryData = JSON.parse(dryStdout);
+
+  if (dryData.issues && dryData.issues.length > 0) {
+    throw new Error(`TM ${side} dry-run issues: ${JSON.stringify(dryData.issues)}`);
+  }
+
+  const dryRun = {
+    qty: String(dryData.qty || amount),
+    qtyOut: String(dryData.qty_out || "0"),
+    fee: String(dryData.fee || "0"),
+  };
+
+  // Execute
+  const execStdout = await tmCli([side, base, amount, "--qty-unit", qtyUnit, "--force", "-o", "json"]);
+  const execData = JSON.parse(execStdout);
+
+  if (execData.error) {
+    throw new Error(`TM ${side} failed: ${execData.error}`);
+  }
+
+  return {
+    orderId: String(execData.order_id || ""),
+    txHash: String(execData.tx_hash || ""),
+    dryRun,
+  };
+}
+
 async function generateAITradePlan(
   workflow: Workflow,
   drifts: DriftEntry[],
@@ -459,6 +637,15 @@ export async function POST(req: NextRequest) {
       let trades: TradeOrder[] = [];
       let executedOrders: Array<{ symbol: string; side: string; notional: number; orderId: string; status: string }> = [];
       let finalStatus: "completed" | "scheduled" = "completed";
+      let preTradeSnapshot: Record<string, unknown> | null = null;
+      let postTradeSnapshot: Record<string, unknown> | null = null;
+
+      // Create run record
+      await supabase.from("workflow_execution_runs").insert({
+        workflow_id: workflowId,
+        run_id: runId,
+        status: "running",
+      });
 
       try {
         /* ─── NODE 1: TRIGGER ─── */
@@ -466,10 +653,13 @@ export async function POST(req: NextRequest) {
         log("TRIGGER", "info", "Workflow initialized, checking trigger conditions...");
 
         const allSymbols = workflow.allocations.map((a) => a.symbol);
-        log("TRIGGER", "info", `Fetching prices for: ${allSymbols.map(normalizeSymbol).join(", ")}`);
+        const useTm = workflow.venue === "TrueMarkets" || workflow.data_source === "TrueMarkets";
+        log("TRIGGER", "info", `Fetching prices via ${useTm ? "TrueMarkets CLI" : "CoinGecko"} for: ${allSymbols.map(normalizeSymbol).join(", ")}`);
 
         try {
-          prices = await fetchPrices(allSymbols);
+          prices = useTm
+            ? await fetchTmPrices(allSymbols)
+            : await fetchPrices(allSymbols);
           const priceStr = Object.entries(prices)
             .map(([s, p]) => `${s}: $${p.toLocaleString()}`)
             .join(", ");
@@ -521,7 +711,33 @@ export async function POST(req: NextRequest) {
         let totalPortfolioValue = workflow.investment;
         const currentHoldings: Record<string, number> = {};
 
-        if (workflow.venue === "Alpaca" && hasAlpacaCredentials()) {
+        if (workflow.venue === "TrueMarkets") {
+          // ── TrueMarkets: fetch balances via CLI ──
+          try {
+            log("PRE-TRADE", "info", "Fetching balances via TrueMarkets CLI...");
+            const rawBalances = await fetchTmBalances();
+            const balances = await enrichTmBalancesWithPrices(rawBalances);
+
+            const usdcBal = balances.find((b) => b.symbol === "USDC");
+            const cashAvailable = usdcBal ? usdcBal.balance : 0;
+            log("PRE-TRADE", "ok", `TrueMarkets wallet: ${balances.length} token(s), USDC: $${cashAvailable.toFixed(2)}`);
+
+            for (const bal of balances) {
+              const base = bal.symbol.toUpperCase();
+              if (allSymbols.some((s) => normalizeSymbol(s) === base) && bal.value_usd > 0) {
+                currentHoldings[base] = bal.value_usd;
+              }
+            }
+
+            const posValue = Object.values(currentHoldings).reduce((s, v) => s + v, 0);
+            totalPortfolioValue = workflow.investment;
+
+            log("PRE-TRADE", "info", `Current positions: $${posValue.toFixed(2)} | Target portfolio: $${totalPortfolioValue.toFixed(2)} | USDC available: $${cashAvailable.toFixed(2)}`);
+          } catch (e) {
+            log("PRE-TRADE", "warn", `Could not fetch TrueMarkets balances: ${e instanceof Error ? e.message : "error"}. Using investment amount.`);
+          }
+        } else if (workflow.venue === "Alpaca" && hasAlpacaCredentials()) {
+          // ── Alpaca: fetch positions and account ──
           try {
             const [positions, account] = await Promise.all([
               fetchAlpacaPositions(),
@@ -536,11 +752,6 @@ export async function POST(req: NextRequest) {
               }
             }
 
-            // The investment amount defines how much capital should be allocated to this strategy.
-            // We always use the investment amount as the target portfolio size.
-            // - If no positions exist: buy from cash to reach target amounts
-            // - If positions exist but < investment: buy more to fill up
-            // - If positions exist and > investment: sell down to target amounts
             const posValue = Object.values(currentHoldings).reduce((s, v) => s + v, 0);
             totalPortfolioValue = workflow.investment;
 
@@ -550,6 +761,20 @@ export async function POST(req: NextRequest) {
           }
         } else {
           log("PRE-TRADE", "info", `Using initial investment: $${workflow.investment}`);
+        }
+
+        // Guard: if investment is 0 or not set, fall back to current positions value
+        if (totalPortfolioValue <= 0) {
+          const posValue = Object.values(currentHoldings).reduce((s, v) => s + v, 0);
+          if (posValue > 0) {
+            totalPortfolioValue = posValue;
+            log("PRE-TRADE", "warn", `Investment amount is $0 — using current positions value ($${posValue.toFixed(2)}) as target`);
+          } else {
+            log("PRE-TRADE", "error", "Investment amount is $0 and no positions found — cannot rebalance");
+            nodeStatus("analyze", "failed");
+            finalStatus = "scheduled";
+            throw new Error("No investment amount set and no positions to rebalance");
+          }
         }
 
         // Calculate drift
@@ -578,6 +803,26 @@ export async function POST(req: NextRequest) {
 
         const maxDrift = Math.max(...drifts.map((d) => Math.abs(d.driftPct)));
         log("PRE-TRADE", "ok", `Max drift: ${maxDrift.toFixed(2)}% | ${drifts.length} assets analyzed`);
+
+        // Emit structured pre-trade analysis
+        preTradeSnapshot = {
+          portfolioValue: totalPortfolioValue,
+          drifts: drifts.map((d) => ({
+            symbol: d.symbol,
+            targetPct: d.targetPct,
+            currentPct: d.currentPct,
+            driftPct: d.driftPct,
+            currentValue: d.currentValue,
+            targetValue: d.targetValue,
+            diffUsd: d.diffUsd,
+          })),
+          maxDrift,
+          prices: Object.fromEntries(
+            Object.entries(prices).map(([s, p]) => [s, Number(p.toFixed(2))]),
+          ),
+        };
+        send("pre-trade", preTradeSnapshot);
+
         nodeStatus("analyze", "success");
         await delay(500);
 
@@ -589,7 +834,9 @@ export async function POST(req: NextRequest) {
         const t0 = Date.now();
         let prices2: PriceMap;
         try {
-          prices2 = await fetchPrices(allSymbols);
+          prices2 = useTm
+            ? await fetchTmPrices(allSymbols)
+            : await fetchPrices(allSymbols);
           const elapsed = Date.now() - t0;
           log("VALIDATOR", "ok", `Price refresh completed in ${elapsed}ms`);
         } catch {
@@ -660,7 +907,55 @@ export async function POST(req: NextRequest) {
         if (trades.length === 0) {
           log("EXECUTOR", "info", "No trades to execute");
           nodeStatus("execute", "success");
+        } else if (workflow.venue === "TrueMarkets") {
+          // ── TrueMarkets CLI execution ──
+          log("EXECUTOR", "info", `Submitting ${trades.length} order(s) via TrueMarkets CLI (${workflow.mode} mode)...`);
+
+          for (const trade of trades) {
+            if (trade.notional < 1) {
+              log("EXECUTOR", "info", `Skipping ${trade.symbol}: notional $${trade.notional.toFixed(2)} below $1 minimum`);
+              continue;
+            }
+
+            try {
+              log("EXECUTOR", "info", `Placing ${trade.side.toUpperCase()} ${trade.symbol} $${trade.notional.toFixed(2)} via tm CLI...`);
+              const result = await placeTmOrder(trade.symbol, trade.side, trade.notional, prices2[trade.symbol] || prices[trade.symbol]);
+              executedOrders.push({
+                symbol: trade.symbol,
+                side: trade.side,
+                notional: trade.notional,
+                orderId: result.orderId,
+                status: "filled",
+              });
+              if (result.dryRun) {
+                log("EXECUTOR", "info", `Dry-run: ${trade.side} ${result.dryRun.qty} USDC -> ${result.dryRun.qtyOut} ${trade.symbol} (fee: ${result.dryRun.fee})`);
+              }
+              log("EXECUTOR", "ok", `Order ${result.orderId.slice(0, 8)}... filled | tx: ${result.txHash.slice(0, 12)}...`);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : "Unknown error";
+              log("EXECUTOR", "error", `Failed to execute ${trade.side} ${trade.symbol}: ${msg}`);
+              executedOrders.push({
+                symbol: trade.symbol,
+                side: trade.side,
+                notional: trade.notional,
+                orderId: "",
+                status: "failed",
+              });
+            }
+            await delay(500);
+          }
+
+          const successCount = executedOrders.filter((o) => o.status !== "failed").length;
+          const failCount = executedOrders.filter((o) => o.status === "failed").length;
+          log("EXECUTOR", successCount > 0 ? "ok" : "error", `Execution complete: ${successCount} filled, ${failCount} failed`);
+
+          if (failCount > 0 && successCount === 0) {
+            nodeStatus("execute", "failed");
+            throw new Error("All orders failed");
+          }
+          nodeStatus("execute", "success");
         } else if (workflow.venue === "Alpaca" && hasAlpacaCredentials()) {
+          // ── Alpaca execution ──
           log("EXECUTOR", "info", `Submitting ${trades.length} order(s) to Alpaca (${workflow.mode} mode)...`);
 
           for (const trade of trades) {
@@ -704,7 +999,7 @@ export async function POST(req: NextRequest) {
           }
           nodeStatus("execute", "success");
         } else {
-          // Paper mode simulation without Alpaca credentials
+          // Paper mode simulation without credentials
           log("EXECUTOR", "info", "Simulating paper trades...");
           for (const trade of trades) {
             if (trade.notional < 1) continue;
@@ -729,8 +1024,29 @@ export async function POST(req: NextRequest) {
         nodeStatus("verify", "running");
         log("VERIFIER", "info", "Reconciling balances...");
 
-        if (workflow.venue === "Alpaca" && hasAlpacaCredentials() && executedOrders.length > 0) {
-          await delay(1500); // Wait for fills
+        if (workflow.venue === "TrueMarkets" && executedOrders.length > 0) {
+          // ── TrueMarkets: re-fetch balances via CLI ──
+          await delay(2000); // Wait for on-chain settlement
+          try {
+            const newRawBalances = await fetchTmBalances();
+            const newBalances = await enrichTmBalancesWithPrices(newRawBalances);
+            log("VERIFIER", "ok", `Fetched ${newBalances.length} token(s) from TrueMarkets`);
+
+            for (const order of executedOrders) {
+              if (order.status === "failed") continue;
+              const bal = newBalances.find((b) => b.symbol === order.symbol);
+              if (bal) {
+                log("VERIFIER", "ok", `${order.symbol}: balance=${bal.balance}, value=$${bal.value_usd.toFixed(2)}`);
+              } else {
+                log("VERIFIER", "warn", `${order.symbol}: not found in wallet (may still be settling on-chain)`);
+              }
+            }
+          } catch {
+            log("VERIFIER", "warn", "Could not re-fetch TrueMarkets balances for verification");
+          }
+        } else if (workflow.venue === "Alpaca" && hasAlpacaCredentials() && executedOrders.length > 0) {
+          // ── Alpaca: re-fetch positions ──
+          await delay(1500);
           try {
             const newPositions = await fetchAlpacaPositions();
             log("VERIFIER", "ok", `Fetched ${newPositions.length} position(s) from Alpaca`);
@@ -786,6 +1102,33 @@ export async function POST(req: NextRequest) {
         const benefitScore = oldMaxDrift > 0 ? ((oldMaxDrift - newMaxDrift) / oldMaxDrift * 100) : 0;
         log("POST-TRADE", "ok", `Benefit score: ${benefitScore.toFixed(1)}% drift reduction`);
 
+        // Emit structured post-trade analysis
+        postTradeSnapshot = {
+          driftBefore: oldMaxDrift,
+          driftAfter: newMaxDrift,
+          driftImprovement: oldMaxDrift - newMaxDrift,
+          benefitScore,
+          totalTraded,
+          totalOrders: executedOrders.length,
+          successfulOrders: successfulTrades.length,
+          failedOrders: executedOrders.length - successfulTrades.length,
+          estimatedFees,
+          orders: executedOrders.map((o) => ({
+            symbol: o.symbol,
+            side: o.side,
+            notional: o.notional,
+            orderId: o.orderId,
+            status: o.status,
+          })),
+          estimatedDrifts: estimatedNewDrifts.map((d) => ({
+            symbol: d.symbol,
+            targetPct: d.targetPct,
+            newPct: Math.round(d.currentPct * 100) / 100,
+            newDriftPct: Math.round(d.driftPct * 100) / 100,
+          })),
+        };
+        send("post-trade", postTradeSnapshot);
+
         nodeStatus("post-analyze", "success");
         await delay(400);
 
@@ -805,6 +1148,18 @@ export async function POST(req: NextRequest) {
         nodeStatus("report", "success");
 
         await persistLogs();
+
+        // Persist run analysis
+        await supabase
+          .from("workflow_execution_runs")
+          .update({
+            status: "completed",
+            pre_trade: preTradeSnapshot,
+            post_trade: postTradeSnapshot,
+            completed_at: new Date().toISOString(),
+          })
+          .eq("run_id", runId);
+
         send("complete", { status: "completed", runId, trades: executedOrders.length });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -816,6 +1171,18 @@ export async function POST(req: NextRequest) {
           .eq("id", workflowId);
 
         await persistLogs();
+
+        // Persist run analysis (even on failure — pre-trade may exist)
+        await supabase
+          .from("workflow_execution_runs")
+          .update({
+            status: "failed",
+            pre_trade: preTradeSnapshot,
+            post_trade: postTradeSnapshot,
+            completed_at: new Date().toISOString(),
+          })
+          .eq("run_id", runId);
+
         send("complete", { status: finalStatus, runId, error: msg });
       }
 

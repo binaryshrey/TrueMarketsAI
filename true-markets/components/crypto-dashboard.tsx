@@ -3603,7 +3603,7 @@ function buildPortfolioAllocationSlices(
   }
 
   if (portfolioData.summary.cash > 0) {
-    baseSlices.push({ label: "Cash", value: portfolioData.summary.cash });
+    baseSlices.push({ label: "USDC", value: portfolioData.summary.cash });
   }
 
   if (baseSlices.length === 0) {
@@ -3615,11 +3615,14 @@ function buildPortfolioAllocationSlices(
 
   const total = baseSlices.reduce((sum, slice) => sum + slice.value, 0);
 
-  return baseSlices.map((slice, index) => ({
+  let colorIdx = 0;
+  return baseSlices.map((slice) => ({
     ...slice,
     pct: total > 0 ? (slice.value / total) * 100 : 0,
     color:
-      PORTFOLIO_ALLOCATION_COLORS[index % PORTFOLIO_ALLOCATION_COLORS.length],
+      slice.label === "USDC"
+        ? "#facc15"
+        : PORTFOLIO_ALLOCATION_COLORS[colorIdx++ % PORTFOLIO_ALLOCATION_COLORS.length],
   }));
 }
 
@@ -4066,6 +4069,11 @@ export default function CryptoDashboard() {
     useState<DiversificationInsight | null>(null);
   const [diversificationInsightLoading, setDiversificationInsightLoading] =
     useState(false);
+  const [liveDiversificationInsight, setLiveDiversificationInsight] =
+    useState<DiversificationInsight | null>(null);
+  const [liveDiversificationLoading, setLiveDiversificationLoading] =
+    useState(false);
+  const [liveRecentOrders, setLiveRecentOrders] = useState<PortfolioOrder[]>([]);
   const [activeTab, setActiveTab] = useState<"gainers" | "losers">("gainers");
   const [marketLeadersTab, setMarketLeadersTab] = useState<"up" | "down">("up");
   const [marketLeadersPage, setMarketLeadersPage] = useState(0);
@@ -5287,7 +5295,7 @@ export default function CryptoDashboard() {
     },
   ].filter((item): item is MarketSummaryItem => Boolean(item));
 
-  const [allocationShowCash, setAllocationShowCash] = useState(true);
+  const [allocationShowCash, setAllocationShowCash] = useState(false);
 
   const portfolioAllocationSlicesAll = portfolioData
     ? buildPortfolioAllocationSlices(portfolioData)
@@ -5296,7 +5304,7 @@ export default function CryptoDashboard() {
   const portfolioAllocationSlices = (() => {
     if (allocationShowCash) return portfolioAllocationSlicesAll;
     const filtered = portfolioAllocationSlicesAll.filter(
-      (s) => s.label !== "Cash",
+      (s) => s.label !== "USDC",
     );
     const total = filtered.reduce((sum, s) => sum + s.value, 0);
     return filtered.map((s) => ({
@@ -5361,6 +5369,46 @@ export default function CryptoDashboard() {
             maximumFractionDigits: 6,
           })} ${liveTopBalance.symbol}`
         : "--";
+  const liveTotalValueUsd = trueMarketsBalances.reduce((sum, b) => {
+    const val = Number(b.value_usd);
+    return sum + (Number.isFinite(val) ? val : 0);
+  }, 0);
+
+  // Build allocation slices from TrueMarkets balances for Live tab
+  const USDC_COLOR = "#facc15"; // yellow — always used for USDC/stablecoins
+  const liveAllocationSlices = (() => {
+    const withValue = trueMarketsBalances
+      .map((b) => ({
+        label: b.symbol || b.name,
+        value: Number(b.value_usd) || 0,
+        isStable: b.stable,
+      }))
+      .filter((e) => e.value > 0)
+      .sort((a, b) => b.value - a.value);
+
+    if (withValue.length === 0 && liveTotalValueUsd <= 0) return [];
+
+    const total = withValue.reduce((s, e) => s + e.value, 0);
+    let colorIdx = 0;
+    return withValue.map((e) => ({
+      label: e.label,
+      value: e.value,
+      pct: total > 0 ? (e.value / total) * 100 : 0,
+      color: e.isStable || e.label === "USDC"
+        ? USDC_COLOR
+        : PORTFOLIO_ALLOCATION_COLORS[colorIdx++ % PORTFOLIO_ALLOCATION_COLORS.length],
+    }));
+  })();
+
+  const liveDiversificationInput = liveAllocationSlices.map((s) => ({
+    label: s.label,
+    pct: Number(s.pct.toFixed(2)),
+    value: Number(s.value.toFixed(2)),
+  }));
+  const liveDiversificationSignature = liveDiversificationInput
+    .map((s) => `${s.label}:${s.pct.toFixed(2)}`)
+    .join("|");
+
   const riskAnalysisAssetCards = (portfolioData?.positions ?? []).map(
     (position) => {
       const qty = Number(position.qty || 0);
@@ -5801,6 +5849,119 @@ export default function CryptoDashboard() {
     diversificationAllocationSignature,
     diversificationAllocationPayload,
   ]);
+
+  // Live diversification insight (TrueMarkets)
+  useEffect(() => {
+    if (
+      pathname !== "/portfolio" ||
+      portfolioMode !== "live" ||
+      liveDiversificationInput.length === 0
+    ) {
+      setLiveDiversificationInsight(null);
+      setLiveDiversificationLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const localProjection = buildLocalDiversificationInsight(liveDiversificationInput);
+
+    setLiveDiversificationInsight((prev) => prev ?? localProjection);
+    setLiveDiversificationLoading(true);
+
+    const run = async () => {
+      try {
+        const response = await fetch("/api/portfolio-diversification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            allocations: liveDiversificationInput,
+            localProjection,
+          }),
+        });
+
+        if (!response.ok) throw new Error("Failed");
+
+        const payload = (await response.json()) as DiversificationInsight;
+        if (!cancelled) setLiveDiversificationInsight(payload);
+      } catch {
+        if (!cancelled) setLiveDiversificationInsight(localProjection);
+      } finally {
+        if (!cancelled) setLiveDiversificationLoading(false);
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [pathname, portfolioMode, liveDiversificationSignature]);
+
+  // Fetch recent filled orders from workflow execution runs (TrueMarkets)
+  useEffect(() => {
+    if (pathname !== "/portfolio" || portfolioMode !== "live") {
+      setLiveRecentOrders([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchOrders = async () => {
+      try {
+        const res = await fetch("/api/rebalance-workflows");
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data.workflows)) return;
+
+        // Get TrueMarkets workflows only
+        const tmWorkflows = data.workflows.filter(
+          (w: { venue?: string }) => w.venue === "TrueMarkets",
+        );
+        if (tmWorkflows.length === 0) return;
+
+        // Fetch latest runs for each workflow
+        const orders: PortfolioOrder[] = [];
+        for (const wf of tmWorkflows.slice(0, 5)) {
+          try {
+            const runRes = await fetch(
+              `/api/rebalance-workflows/runs?workflow_id=${wf.id}`,
+            );
+            const runData = await runRes.json();
+            if (cancelled || !runData.run?.post_trade?.orders) continue;
+
+            for (const o of runData.run.post_trade.orders) {
+              orders.push({
+                id: o.orderId || `${o.symbol}-${Date.now()}`,
+                symbol: o.symbol,
+                side: o.side,
+                type: "market",
+                status: o.status === "failed" ? "failed" : "filled",
+                time_in_force: "gtc",
+                qty: `$${Number(o.notional).toFixed(2)}`,
+                filled_qty: o.status === "failed" ? "0" : `$${Number(o.notional).toFixed(2)}`,
+                limit_price: null,
+                submitted_at: runData.run.completed_at || runData.run.started_at || "",
+                filled_at: runData.run.completed_at || "",
+              });
+            }
+          } catch {
+            // skip
+          }
+        }
+
+        if (!cancelled) setLiveRecentOrders(orders);
+      } catch {
+        // silent
+      }
+    };
+
+    void fetchOrders();
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, portfolioMode]);
 
   const handleAnalyzeAllocationSimulation = useCallback(async () => {
     if (portfolioSimulatorSymbols.length === 0) return;
@@ -6560,7 +6721,7 @@ export default function CryptoDashboard() {
                             Portfolio
                           </h1>
                           <p className="mt-1 text-sm text-zinc-500">
-                            Alpaca Paper Trading Account
+                            {portfolioMode === "live" ? "TrueMarkets Live Account" : "Alpaca Paper Trading Account"}
                           </p>
                         </div>
                         <div className="flex w-full items-center gap-2 md:w-auto">
@@ -6598,7 +6759,7 @@ export default function CryptoDashboard() {
                         </div>
                       </div>
 
-                      {portfolioMode === "paper" || portfolioMode === "live" ? (
+                      {portfolioMode === "paper" ? (
                         portfolioRouteError ? (
                           <div className="border border-red-500/20 bg-red-500/5 px-4 py-4 text-sm text-red-300">
                             {portfolioRouteError}
@@ -6775,7 +6936,7 @@ export default function CryptoDashboard() {
                                           : "text-zinc-500 hover:text-zinc-300"
                                       }`}
                                     >
-                                      Positions
+                                      Assets
                                     </button>
                                   </div>
                                 </div>
@@ -6824,7 +6985,7 @@ export default function CryptoDashboard() {
                                 )}`}
                               />
                               <PortfolioStatTile
-                                label="Cash"
+                                label="USDC"
                                 value={fmtBig(portfolioData.summary.cash)}
                                 detail={`Buying power ${fmtBig(
                                   portfolioData.summary.buying_power,
@@ -7022,48 +7183,24 @@ export default function CryptoDashboard() {
                         </div>
                       ) : (
                         <>
-                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                            <PortfolioStatTile
-                              label="Current Balance"
-                              value={liveCurrentBalance}
-                              detail={
-                                liveStableBalance > 0
-                                  ? "Stablecoin balance"
-                                  : `Top asset ${liveTopBalance?.symbol ?? "--"}`
-                              }
-                            />
-                            <PortfolioStatTile
-                              label="Assets"
-                              value={String(trueMarketsBalances.length)}
-                              detail="Tracked token balances"
-                            />
-                            <PortfolioStatTile
-                              label="Chains"
-                              value={String(liveChainCount)}
-                              detail="Networks with balances"
-                            />
-                            <PortfolioStatTile
-                              label="Tradeable"
-                              value={String(liveTradeableCount)}
-                              detail="Assets marked tradeable"
-                            />
-                          </div>
+                          {/* ── Same layout as Paper tab ── */}
+                          <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+                            {/* Net Worth card */}
+                            <section
+                              className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="text-xs font-medium text-zinc-500">
+                                    Net Worth
+                                  </p>
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className="text-[28px] font-semibold leading-none tracking-tight text-zinc-100 tabular-nums md:text-[32px]">
+                                      ${fmtUsd(liveTotalValueUsd)}
+                                    </p>
+                                  </div>
+                                </div>
 
-                          <section
-                            className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <h2 className="text-[16px] font-semibold text-zinc-100 md:text-[18px]">
-                                Live Wallet Balances
-                              </h2>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-zinc-500">
-                                  {trueMarketsBalancesUpdatedAt
-                                    ? new Date(
-                                        trueMarketsBalancesUpdatedAt,
-                                      ).toLocaleString()
-                                    : "--"}
-                                </span>
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -7082,74 +7219,442 @@ export default function CryptoDashboard() {
                                   />
                                 </button>
                               </div>
-                            </div>
 
-                            {liveBalanceRows.length === 0 ? (
-                              <div className="mt-3 rounded-xl border border-white/[0.08] bg-[#0a0a0a] px-4 py-5 text-sm text-zinc-500">
-                                No balances returned from TrueMarkets.
-                              </div>
-                            ) : (
-                              <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0a0a0a]">
-                                <div className="grid grid-cols-[minmax(0,1.4fr)_0.8fr_0.8fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.06] px-4 py-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">
-                                  <span>Asset</span>
-                                  <span>Chain</span>
-                                  <span className="text-right">Balance</span>
-                                  <span className="text-center">Type</span>
-                                  <span className="text-center">Status</span>
+                              <div className="mt-3 grid gap-2.5 md:grid-cols-3">
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    USDC
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    ${liveStableBalance.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                                  </p>
                                 </div>
                                 <div>
-                                  {liveBalanceRows.map((balance, index) => {
-                                    const numericBalance = Number(
-                                      balance.balance,
-                                    );
-                                    const displayBalance = Number.isFinite(
-                                      numericBalance,
-                                    )
-                                      ? numericBalance.toLocaleString("en-US", {
-                                          maximumFractionDigits: 6,
-                                        })
-                                      : balance.balance;
-
-                                    return (
-                                      <div
-                                        key={`${balance.chain}-${balance.asset}-${index}`}
-                                        className="grid grid-cols-[minmax(0,1.4fr)_0.8fr_0.8fr_0.8fr_0.8fr] items-center gap-3 border-b border-white/[0.06] px-4 py-2.5 text-sm last:border-b-0"
-                                      >
-                                        <div className="min-w-0">
-                                          <p className="truncate font-medium text-zinc-100">
-                                            {balance.symbol || balance.name}
-                                          </p>
-                                          <p className="truncate text-xs text-zinc-500">
-                                            {balance.name || balance.asset}
-                                          </p>
-                                        </div>
-                                        <span className="text-xs uppercase text-zinc-300">
-                                          {balance.chain}
-                                        </span>
-                                        <span className="text-right font-medium tabular-nums text-zinc-100">
-                                          {displayBalance}
-                                        </span>
-                                        <span className="text-center text-xs text-zinc-300">
-                                          {balance.stable ? "Stable" : "Token"}
-                                        </span>
-                                        <span
-                                          className={`text-center text-xs ${
-                                            balance.tradeable
-                                              ? "text-emerald-300"
-                                              : "text-zinc-500"
-                                          }`}
-                                        >
-                                          {balance.tradeable
-                                            ? "Tradeable"
-                                            : "Read only"}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
+                                  <p className="text-xs text-zinc-500">
+                                    Total Assets
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    ${fmtUsd(liveTotalValueUsd)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-zinc-500">
+                                    Chains
+                                  </p>
+                                  <p className="mt-0.5 text-[17px] font-semibold text-zinc-100 tabular-nums md:text-[18px]">
+                                    {liveChainCount}
+                                  </p>
                                 </div>
                               </div>
-                            )}
-                          </section>
+
+                              {/* Risk Profile bar */}
+                              {liveAllocationSlices.length > 0 && (
+                                <div className="mt-3">
+                                  <p className="text-xs font-medium text-zinc-300">
+                                    Risk Profile
+                                  </p>
+                                  <div className="mt-1.5 overflow-hidden rounded-md border border-white/[0.08] bg-white/[0.02]">
+                                    <div className="flex h-3.5 w-full">
+                                      {liveAllocationSlices.map((slice) => (
+                                        <span
+                                          key={`live-risk-${slice.label}`}
+                                          className="h-full"
+                                          style={{
+                                            width: `${slice.pct}%`,
+                                            backgroundColor: slice.color,
+                                          }}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                                    {liveAllocationSlices.map((slice) => (
+                                      <div
+                                        key={`live-risk-legend-${slice.label}`}
+                                        className="min-w-[70px]"
+                                      >
+                                        <div className="flex items-center gap-1">
+                                          <span
+                                            className="h-1.5 w-1.5 rounded-full"
+                                            style={{
+                                              backgroundColor: slice.color,
+                                            }}
+                                          />
+                                          <span className="text-[11px] text-zinc-200">
+                                            {slice.label}
+                                          </span>
+                                        </div>
+                                        <p className="pl-2.5 text-[11px] tabular-nums text-zinc-500">
+                                          {slice.pct.toFixed(2)}%
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </section>
+
+                            {/* Portfolio Allocation donut */}
+                            <section
+                              className={`p-3.5 md:p-4 ${CARD_SHELL_CLASS}`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <h2 className="text-[16px] font-semibold text-zinc-100 md:text-[18px]">
+                                  Portfolio Allocation
+                                </h2>
+                                <div className="flex items-center rounded-lg border border-white/[0.08] bg-white/[0.03] p-0.5">
+                                  <button
+                                    onClick={() => setAllocationShowCash(true)}
+                                    className={`rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                                      allocationShowCash
+                                        ? "bg-[#f1c232] text-black"
+                                        : "text-zinc-500 hover:text-zinc-300"
+                                    }`}
+                                  >
+                                    All
+                                  </button>
+                                  <button
+                                    onClick={() => setAllocationShowCash(false)}
+                                    className={`rounded-md px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                                      !allocationShowCash
+                                        ? "bg-[#f1c232] text-black"
+                                        : "text-zinc-500 hover:text-zinc-300"
+                                    }`}
+                                  >
+                                    Assets
+                                  </button>
+                                </div>
+                              </div>
+
+                              {(() => {
+                                const displaySlices = allocationShowCash
+                                  ? liveAllocationSlices
+                                  : (() => {
+                                      const filtered = liveAllocationSlices.filter((s) => s.label !== "USDC");
+                                      const total = filtered.reduce((sum, s) => sum + s.value, 0);
+                                      return filtered.map((s) => ({
+                                        ...s,
+                                        pct: total > 0 ? (s.value / total) * 100 : 0,
+                                      }));
+                                    })();
+                                const displayTotal = displaySlices.reduce((s, sl) => s + sl.value, 0);
+
+                                return (
+                              <div className="mt-2.5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="mx-auto shrink-0 md:mx-0">
+                                  <PortfolioAllocationDonut
+                                    slices={displaySlices}
+                                    total={displayTotal}
+                                  />
+                                </div>
+
+                                <div className="space-y-1 md:min-w-[150px]">
+                                  {displaySlices.map((slice) => (
+                                    <div
+                                      key={`live-alloc-${slice.label}`}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-zinc-200">
+                                        <span
+                                          className="h-2 w-2 rounded-full"
+                                          style={{
+                                            backgroundColor: slice.color,
+                                          }}
+                                        />
+                                        <span className="truncate">
+                                          {slice.label}
+                                        </span>
+                                      </span>
+                                      <span className="text-[12px] font-semibold tabular-nums text-zinc-100">
+                                        {slice.pct.toFixed(2)}%
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                                );
+                              })()}
+                            </section>
+                          </div>
+
+                          {/* Stat tiles */}
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            <PortfolioStatTile
+                              label="Net Worth"
+                              value={`$${fmtUsd(liveTotalValueUsd)}`}
+                            />
+                            <PortfolioStatTile
+                              label="USDC"
+                              value={`$${liveStableBalance.toLocaleString("en-US", { maximumFractionDigits: 2 })}`}
+                            />
+                            <PortfolioStatTile
+                              label="Open Positions"
+                              value={String(trueMarketsBalances.filter((b) => !b.stable && Number(b.balance) > 0).length)}
+                              detail={`${trueMarketsBalances.length} total assets`}
+                            />
+                            <PortfolioStatTile
+                              label="Chains"
+                              value={String(liveChainCount)}
+                              detail={`${liveTradeableCount} tradeable`}
+                            />
+                          </div>
+
+                          <DiversificationInsightSection
+                            insight={liveDiversificationInsight}
+                            loading={liveDiversificationLoading}
+                          />
+
+                          {/* Portfolio Snapshot + Position Charts + Wallet Balances */}
+                          <div className="space-y-4">
+                            <section
+                              className={`overflow-hidden ${CARD_SHELL_CLASS}`}
+                            >
+                              <Accordion
+                                type="multiple"
+                                defaultValue={["live-snapshot", "live-balances"]}
+                                className="w-full"
+                              >
+                                {/* Portfolio Snapshot */}
+                                <AccordionItem
+                                  value="live-snapshot"
+                                  className="border-b border-white/5 px-4"
+                                >
+                                  <AccordionTrigger className="text-sm font-medium text-zinc-200 hover:no-underline">
+                                    Portfolio Snapshot
+                                  </AccordionTrigger>
+                                  <AccordionContent className="pb-4">
+                                    <div className={`w-full overflow-hidden ${CARD_SHELL_CLASS}`}>
+                                      <div className="px-4 py-3 border-b border-white/[0.05]">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div>
+                                            <p className="text-base font-semibold text-white leading-tight">
+                                              Portfolio Snapshot
+                                            </p>
+                                            <p className="text-sm text-zinc-500">
+                                              {trueMarketsBalancesUpdatedAt
+                                                ? new Date(trueMarketsBalancesUpdatedAt).toLocaleString("en-US")
+                                                : new Date().toLocaleString("en-US")}
+                                            </p>
+                                          </div>
+                                          <span className="text-sm text-zinc-500">
+                                            ACTIVE · USD
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      {/* Positions */}
+                                      <div className="px-3 py-2 border-t border-white/5">
+                                        <p className="text-sm text-zinc-600 mb-1.5">
+                                          Positions ({trueMarketsBalances.filter((b) => !b.stable && Number(b.balance) > 0).length})
+                                        </p>
+                                        {trueMarketsBalances.filter((b) => !b.stable && Number(b.balance) > 0).length === 0 ? (
+                                          <p className="text-sm text-zinc-500">No open positions.</p>
+                                        ) : (
+                                          <div className="space-y-1.5">
+                                            {trueMarketsBalances
+                                              .filter((b) => !b.stable && Number(b.balance) > 0)
+                                              .sort((a, b) => (Number(b.value_usd) || 0) - (Number(a.value_usd) || 0))
+                                              .slice(0, 8)
+                                              .map((b) => {
+                                                const bal = Number(b.balance) || 0;
+                                                const price = Number(b.price_usd) || 0;
+                                                const mv = Number(b.value_usd) || 0;
+                                                return (
+                                                  <div
+                                                    key={`live-pos-${b.symbol}-${b.chain}`}
+                                                    className="flex items-center justify-between gap-2 rounded-md border border-white/8 bg-white/[0.02] px-2 py-1.5"
+                                                  >
+                                                    <div>
+                                                      <p className="text-sm text-zinc-200 font-semibold">
+                                                        {b.symbol}
+                                                      </p>
+                                                      <p className="text-sm text-zinc-500">
+                                                        Qty {bal.toLocaleString("en-US", { maximumFractionDigits: 9 })} · Price ${price.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                                                      </p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                      <p className="text-sm text-zinc-200">
+                                                        MV ${mv.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                                                      </p>
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Position Charts */}
+                                      {(() => {
+                                        const livePositionCharts = trueMarketsBalances
+                                          .filter((b) => !b.stable && Number(b.balance) > 0 && Number(b.price_usd) > 0)
+                                          .sort((a, b) => (Number(b.value_usd) || 0) - (Number(a.value_usd) || 0))
+                                          .slice(0, 6)
+                                          .map((b) => {
+                                            const price = Number(b.price_usd) || 0;
+                                            // Generate a synthetic sparkline based on price
+                                            const sparkline = Array.from({ length: 24 }, (_, i) => {
+                                              const t = i / 23;
+                                              const wave = Math.sin(t * Math.PI * 4) * price * 0.008;
+                                              return Math.max(0.000001, price + wave);
+                                            });
+                                            return {
+                                              id: `${b.symbol}-${b.chain}`,
+                                              label: b.symbol,
+                                              symbol: b.symbol,
+                                              currentPrice: price,
+                                              deltaPct: 0,
+                                              positive: true,
+                                              sparkline,
+                                              marketValue: Number(b.value_usd) || 0,
+                                            };
+                                          });
+
+                                        if (livePositionCharts.length === 0) return null;
+
+                                        return (
+                                          <div className="px-3 py-3 border-t border-white/5">
+                                            <p className="text-sm text-zinc-600 mb-2">Position Charts</p>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                                              {livePositionCharts.map((asset) => (
+                                                <div
+                                                  key={asset.id}
+                                                  className="group bg-[#0a0a0a] border border-white/[0.07] rounded-xl hover:border-white/[0.14] hover:bg-[#111] transition-all overflow-hidden"
+                                                >
+                                                  <div className="px-3.5 pt-3.5 pb-2">
+                                                    <div className="flex items-start justify-between gap-2">
+                                                      <div className="min-w-0">
+                                                        <p className="text-sm font-semibold text-white truncate leading-tight">
+                                                          {asset.label}
+                                                        </p>
+                                                        <p className="text-sm text-zinc-500 mt-1 tabular-nums">
+                                                          {fmt(asset.currentPrice)}
+                                                        </p>
+                                                      </div>
+                                                    </div>
+                                                  </div>
+                                                  {asset.sparkline.length > 1 && (
+                                                    <CardSparkline
+                                                      data={asset.sparkline}
+                                                      positive={asset.positive}
+                                                    />
+                                                  )}
+
+                                                  <div className="px-3.5 pb-3.5">
+                                                    <NotablePriceMovementStepper
+                                                      assetId={asset.id}
+                                                      symbol={asset.symbol}
+                                                      currentPrice={asset.currentPrice}
+                                                      movePct={asset.deltaPct}
+                                                      positive={asset.positive}
+                                                      marketValue={asset.marketValue}
+                                                      items={riskAnalysisNewsBySymbol[asset.symbol] ?? []}
+                                                      loading={riskAnalysisNewsLoading}
+                                                    />
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  </AccordionContent>
+                                </AccordionItem>
+
+                                {/* Wallet Balances */}
+                                <AccordionItem
+                                  value="live-balances"
+                                  className="border-b-0 px-4"
+                                >
+                                  <AccordionTrigger className="text-sm font-medium text-zinc-200 hover:no-underline">
+                                    Wallet Balances
+                                    <span className="ml-2 text-xs text-zinc-500">
+                                      {trueMarketsBalancesUpdatedAt
+                                        ? new Date(trueMarketsBalancesUpdatedAt).toLocaleString()
+                                        : ""}
+                                    </span>
+                                  </AccordionTrigger>
+                                  <AccordionContent className="pb-4">
+                                    {liveBalanceRows.length === 0 ? (
+                                      <div className="rounded-xl border border-white/[0.08] bg-[#0a0a0a] px-4 py-5 text-sm text-zinc-500">
+                                        No balances returned from TrueMarkets.
+                                      </div>
+                                    ) : (
+                                      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0a0a0a]">
+                                        <div className="grid grid-cols-[minmax(0,1.4fr)_0.8fr_0.8fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.06] px-4 py-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">
+                                          <span>Asset</span>
+                                          <span>Chain</span>
+                                          <span className="text-right">Balance</span>
+                                          <span className="text-center">Type</span>
+                                          <span className="text-center">Status</span>
+                                        </div>
+                                        <div>
+                                          {liveBalanceRows.map((balance, index) => {
+                                            const numericBalance = Number(balance.balance);
+                                            const displayBalance = Number.isFinite(numericBalance)
+                                              ? numericBalance.toLocaleString("en-US", { maximumFractionDigits: 6 })
+                                              : balance.balance;
+
+                                            return (
+                                              <div
+                                                key={`${balance.chain}-${balance.asset}-${index}`}
+                                                className="grid grid-cols-[minmax(0,1.4fr)_0.8fr_0.8fr_0.8fr_0.8fr] items-center gap-3 border-b border-white/[0.06] px-4 py-2.5 text-sm last:border-b-0"
+                                              >
+                                                <div className="min-w-0">
+                                                  <p className="truncate font-medium text-zinc-100">
+                                                    {balance.symbol || balance.name}
+                                                  </p>
+                                                  <p className="truncate text-xs text-zinc-500">
+                                                    {balance.name || balance.asset}
+                                                  </p>
+                                                </div>
+                                                <span className="text-xs uppercase text-zinc-300">
+                                                  {balance.chain}
+                                                </span>
+                                                <span className="text-right font-medium tabular-nums text-zinc-100">
+                                                  {displayBalance}
+                                                </span>
+                                                <span className="text-center text-xs text-zinc-300">
+                                                  {balance.stable ? "Stable" : "Token"}
+                                                </span>
+                                                <span
+                                                  className={`text-center text-xs ${
+                                                    balance.tradeable ? "text-emerald-300" : "text-zinc-500"
+                                                  }`}
+                                                >
+                                                  {balance.tradeable ? "Tradeable" : "Read only"}
+                                                </span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </AccordionContent>
+                                </AccordionItem>
+
+                                {/* Recent Filled Orders */}
+                                <AccordionItem
+                                  value="live-filled-orders"
+                                  className="border-b-0 px-4"
+                                >
+                                  <AccordionTrigger className="text-sm font-medium text-zinc-200 hover:no-underline">
+                                    Recent Filled Orders
+                                  </AccordionTrigger>
+                                  <AccordionContent className="pb-4">
+                                    <PortfolioOrdersTable
+                                      title="Recent Filled Orders"
+                                      orders={liveRecentOrders}
+                                      emptyLabel="No recent orders. Run a rebalance workflow with TrueMarkets venue to see orders here."
+                                      hideTitle
+                                    />
+                                  </AccordionContent>
+                                </AccordionItem>
+                              </Accordion>
+                            </section>
+                          </div>
                         </>
                       )}
                     </>

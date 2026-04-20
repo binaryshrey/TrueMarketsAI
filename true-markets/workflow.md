@@ -19,7 +19,9 @@ Monitors market conditions and determines whether a rebalance should fire.
 - **Ratio deviation:** Fires when any asset drifts beyond a threshold from target allocation
 - **Time-based:** Fires on a fixed schedule (4h, 12h, 1d, 1w)
 
-**API used:** `GET /api/crypto` (proxies CoinGecko `/simple/price` for real-time prices)
+**APIs used:**
+- **CoinGecko:** `GET /api/crypto` (proxies CoinGecko `/simple/price`) — used when data source is "CoinGecko + Alpaca"
+- **TrueMarkets:** `tm price <symbols> -o json` — used when data source or venue is "TrueMarkets"
 
 **Internal logic:**
 1. Fetch current prices for all portfolio assets from CoinGecko
@@ -35,8 +37,9 @@ Monitors market conditions and determines whether a rebalance should fire.
 Calculates portfolio drift — how far each asset has drifted from its target allocation.
 
 **APIs used:**
-- `GET /api/alpaca/portfolio` — Fetches current Alpaca positions and account info
-- CoinGecko prices (from trigger node)
+- **Alpaca:** `GET /api/alpaca/portfolio` — Fetches current Alpaca positions and account info
+- **TrueMarkets:** `tm balances -o json` + `tm price <symbols> -o json` — Fetches wallet balances and enriches with prices
+- Prices from the trigger node (CoinGecko or TrueMarkets)
 
 **Internal logic:**
 1. Fetch current positions from Alpaca (or use investment amount if no positions exist)
@@ -98,11 +101,13 @@ No external API — uses built-in logic:
 ### 5. EXECUTOR — Execution Engine
 **Color:** `#10b981` (Green)
 
-Places orders through the configured broker.
+Places orders through the configured venue.
 
+**Two venues supported:**
+
+#### Alpaca (Paper Trading)
 **API used:** `POST /api/alpaca/order` (Alpaca Paper Trading API)
 
-**Alpaca order payload:**
 ```json
 {
   "symbol": "BTC/USD",
@@ -113,22 +118,43 @@ Places orders through the configured broker.
 }
 ```
 
-**Internal logic:**
+#### TrueMarkets (Live DeFi)
+**API used:** `tm` CLI (`tm buy/sell <token> <amount> --qty-unit quote --force -o json`)
+
+Two-step execution per trade:
+1. **Dry run:** `tm buy SOL 250 --qty-unit quote --dry-run --force -o json` — validates the quote, checks for issues
+2. **Execute:** `tm buy SOL 250 --qty-unit quote --force -o json` — places the on-chain trade
+
+**Dry-run response:**
+```json
+{
+  "qty": "250",
+  "qty_out": "2.891",
+  "fee": "0.25",
+  "issues": [],
+  "executed": false
+}
+```
+
+**Execution response:**
+```json
+{
+  "order_id": "uuid",
+  "tx_hash": "blockchain-tx-hash"
+}
+```
+
+**Internal logic (both venues):**
 1. For each trade in the plan:
    - Skip trades with notional < $1 (below minimum)
-   - Place a market order via Alpaca API
-   - Record order ID and status
-2. Wait for order acknowledgment
-3. Track success/failure count
+   - Place order via the configured venue
+   - Record order ID/tx hash and status
+2. Track success/failure count
+3. Only fails the node if ALL orders fail
 
-**Paper mode without Alpaca credentials:**
+**Paper mode fallback (no credentials):**
 - Simulates trades locally
 - Calculates qty from price and logs simulated fills
-
-**Error handling:**
-- Individual order failures don't abort the entire workflow
-- Tracks per-order success/failure
-- Only fails the node if ALL orders fail
 
 ---
 
@@ -137,14 +163,16 @@ Places orders through the configured broker.
 
 Reconciles actual positions against expected state after execution.
 
-**API used:** Alpaca Positions API (`GET /v2/positions`)
+**APIs used:**
+- **Alpaca:** `GET /v2/positions` — re-fetch positions after 1.5s
+- **TrueMarkets:** `tm balances -o json` — re-fetch wallet balances after 2s (on-chain settlement)
 
 **Internal logic:**
-1. Wait 1.5s for order fills to settle
-2. Re-fetch all positions from Alpaca
-3. For each executed order, verify the corresponding position exists
-4. Log position quantities and market values
-5. Flag any positions that aren't yet visible (pending fills)
+1. Wait for settlement (1.5s Alpaca, 2s TrueMarkets on-chain)
+2. Re-fetch all positions/balances from the venue
+3. For each executed order, verify the corresponding position/balance exists
+4. Log quantities and market values
+5. Flag any positions not yet visible (pending fills / on-chain confirmation)
 
 ---
 
@@ -258,10 +286,22 @@ When a node is `running`, a CSS shimmer animation sweeps left-to-right across th
 ## Data Flow Diagram
 
 ```
-CoinGecko API ──> [TRIGGER] ──> [PRE-TRADE] ──> [VALIDATOR] ──> [PLANNER] ──> [EXECUTOR] ──> [VERIFIER] ──> [POST-TRADE] ──> [REPORTER]
-                     │               │                │              │              │              │               │               │
-                  Prices          Alpaca           Prices         OpenRouter      Alpaca         Alpaca         Metrics         Supabase
-                                 Positions        (re-fetch)       (AI plan)     Orders        Positions      (compute)        (update)
+                    ┌─ CoinGecko API (Paper/Alpaca)
+Price Source ───────┤
+                    └─ tm price (Live/TrueMarkets)
+
+                    ┌─ Alpaca Positions API (Paper)
+Balance Source ─────┤
+                    └─ tm balances (Live/TrueMarkets)
+
+                    ┌─ Alpaca Orders API (Paper)
+Execution Venue ────┤
+                    └─ tm buy/sell (Live/TrueMarkets)
+
+[TRIGGER] ──> [PRE-TRADE] ──> [VALIDATOR] ──> [PLANNER] ──> [EXECUTOR] ──> [VERIFIER] ──> [POST-TRADE] ──> [REPORTER]
+   │               │               │              │              │              │               │               │
+ Prices         Balances        Prices         OpenRouter     Orders        Balances        Metrics         Supabase
+(CG/TM)       (Alpaca/TM)     (re-fetch)      (AI plan)    (Alpaca/TM)   (Alpaca/TM)     (compute)        (update)
 ```
 
 ---
